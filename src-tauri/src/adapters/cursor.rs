@@ -32,10 +32,10 @@ fn read_access_token(path: &PathBuf) -> Result<Option<String>, rusqlite::Error> 
 
 pub async fn fetch() -> UsageSnapshot {
     let Some(path) = db_path() else {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "无法定位用户目录");
+        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Could not locate home directory");
     };
     if !path.exists() {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "未检测到 Cursor 安装");
+        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Cursor installation not detected");
     }
 
     let path_clone = path.clone();
@@ -45,12 +45,12 @@ pub async fn fetch() -> UsageSnapshot {
     let token = match token_result {
         Ok(Ok(Some(t))) => t,
         Ok(Ok(None)) => {
-            return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "未登录 Cursor 账号")
+            return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Not logged in to Cursor")
         }
         Ok(Err(e)) => {
-            return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("读取本地数据库失败: {e}"))
+            return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Failed to read local database: {e}"))
         }
-        Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("内部错误: {e}")),
+        Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Internal error: {e}")),
     };
 
     let client = super::http_client();
@@ -62,23 +62,23 @@ pub async fn fetch() -> UsageSnapshot {
 
     let resp = match resp {
         Ok(r) => r,
-        Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("请求失败: {e}")),
+        Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Request failed: {e}")),
     };
 
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "登录状态已过期，请重新登录 Cursor");
+        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Login expired - please sign in to Cursor again");
     }
     if !resp.status().is_success() {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("接口返回 {}", resp.status()));
+        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("API returned {}", resp.status()));
     }
 
     let body: Result<Value, _> = resp.json().await;
     let Ok(root) = body else {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "响应格式解析失败");
+        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Failed to parse response");
     };
 
     let Some(map) = root.as_object() else {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "响应格式解析失败");
+        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Failed to parse response");
     };
 
     let mut used_total = 0.0f64;
@@ -106,13 +106,13 @@ pub async fn fetch() -> UsageSnapshot {
         return UsageSnapshot::error(
             PROVIDER,
             DISPLAY_NAME,
-            "当前账号为按额度计费模式，该接口暂不支持展示余额",
+            "This account uses credit-based billing; this endpoint doesn't support showing balance yet",
         );
     }
 
     let percent = (used_total / limit_total) * 100.0;
     let metrics = vec![UsageMetric {
-        label: "月度请求额度".to_string(),
+        label: "Monthly request quota".to_string(),
         used: used_total,
         limit: Some(limit_total),
         percent: Some(percent),

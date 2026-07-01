@@ -71,22 +71,22 @@ function App() {
   return (
     <div className="app-shell">
       <header className="app-header" data-tauri-drag-region>
-        <span className="app-title">AI 用量监控</span>
+        <span className="app-title">AI Usage Monitor</span>
         <div className="header-actions">
           <button
             className="icon-button"
             onClick={handleRefresh}
             disabled={loading}
-            aria-label="刷新"
-            title="刷新"
+            aria-label="Refresh"
+            title="Refresh"
           >
             <RefreshIcon spinning={loading} />
           </button>
           <button
             className="icon-button"
             onClick={() => openSettingsWindow()}
-            aria-label="设置"
-            title="设置"
+            aria-label="Settings"
+            title="Settings"
           >
             <GearIcon />
           </button>
@@ -95,14 +95,14 @@ function App() {
 
       <main className="app-body">
         {snapshots.length === 0 ? (
-          <p className="empty-state">正在加载...</p>
+          <p className="empty-state">Loading...</p>
         ) : (
           snapshots.map((s) => <ProviderCard key={s.provider} snapshot={s} />)
         )}
       </main>
 
       <footer className="app-footer">
-        <span>{lastUpdated ? `最后更新 ${formatUpdatedAt(lastUpdated)}` : ""}</span>
+        <span>{lastUpdated ? `Last updated ${formatUpdatedAt(lastUpdated)}` : ""}</span>
       </footer>
     </div>
   );

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AI 用量监控",
+  "productName": "AI Usage Monitor",
   "version": "0.1.0",
   "identifier": "com.usageshow.app",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "AI 用量监控",
+        "title": "AI Usage Monitor",
         "width": 360,
         "height": 480,
         "resizable": false,

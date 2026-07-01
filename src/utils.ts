@@ -1,19 +1,19 @@
 export function formatResetIn(resetAt: number): string {
   const now = Date.now() / 1000;
   const diff = resetAt - now;
-  if (diff <= 0) return "即将重置";
+  if (diff <= 0) return "Resetting now";
   const totalMinutes = Math.floor(diff / 60);
   const days = Math.floor(totalMinutes / 1440);
   const hours = Math.floor((totalMinutes % 1440) / 60);
   const minutes = totalMinutes % 60;
-  if (days > 0) return `${days} 天后重置`;
-  if (hours > 0) return `${hours} 小时 ${minutes} 分后重置`;
-  return `${minutes} 分钟后重置`;
+  if (days > 0) return `Resets in ${days}d`;
+  if (hours > 0) return `Resets in ${hours}h ${minutes}m`;
+  return `Resets in ${minutes}m`;
 }
 
 export function formatUpdatedAt(ts: number): string {
   const d = new Date(ts * 1000);
-  return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 }
 
 export function formatAmount(value: number, unit: string): string {

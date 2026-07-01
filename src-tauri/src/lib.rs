@@ -91,7 +91,7 @@ async fn save_settings(
             autolaunch.disable()
         };
         if let Err(e) = result {
-            return Err(format!("设置开机自启失败: {e}"));
+            return Err(format!("Failed to set launch-at-startup: {e}"));
         }
     }
 
@@ -109,7 +109,7 @@ async fn open_settings_window(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
     WebviewWindowBuilder::new(&app, SETTINGS_WINDOW, WebviewUrl::App("settings.html".into()))
-        .title("设置")
+        .title("Settings")
         .inner_size(340.0, 480.0)
         .resizable(false)
         .minimizable(false)
@@ -233,10 +233,10 @@ pub fn run() {
                 });
             }
 
-            let show_item = MenuItemBuilder::with_id("show", "打开面板").build(app)?;
-            let settings_item = MenuItemBuilder::with_id("settings", "设置").build(app)?;
-            let refresh_item = MenuItemBuilder::with_id("refresh", "立即刷新").build(app)?;
-            let quit_item = MenuItemBuilder::with_id("quit", "退出").build(app)?;
+            let show_item = MenuItemBuilder::with_id("show", "Open Panel").build(app)?;
+            let settings_item = MenuItemBuilder::with_id("settings", "Settings").build(app)?;
+            let refresh_item = MenuItemBuilder::with_id("refresh", "Refresh Now").build(app)?;
+            let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
             let menu = MenuBuilder::new(app)
                 .items(&[&show_item, &settings_item, &refresh_item, &quit_item])
                 .build()?;
@@ -244,7 +244,7 @@ pub fn run() {
             let tray_handle = handle.clone();
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("AI 用量监控")
+                .tooltip("AI Usage Monitor")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id.as_ref() {

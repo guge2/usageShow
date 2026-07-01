@@ -28,7 +28,7 @@ function Settings() {
   if (!settings) {
     return (
       <div className="settings-shell">
-        <p className="empty-state">正在加载...</p>
+        <p className="empty-state">Loading...</p>
       </div>
     );
   }
@@ -36,7 +36,7 @@ function Settings() {
   return (
     <div className="settings-shell">
       <section className="settings-section">
-        <h3>刷新间隔</h3>
+        <h3>Refresh interval</h3>
         <select
           className="settings-select"
           value={settings.refresh_interval_secs}
@@ -53,7 +53,7 @@ function Settings() {
       </section>
 
       <section className="settings-section">
-        <h3>显示的服务</h3>
+        <h3>Visible tools</h3>
         <div className="checkbox-list">
           {ALL_PROVIDERS.map((p) => (
             <label key={p.id} className="checkbox-row">
@@ -69,14 +69,14 @@ function Settings() {
       </section>
 
       <section className="settings-section">
-        <h3>启动</h3>
+        <h3>Startup</h3>
         <label className="checkbox-row">
           <input
             type="checkbox"
             checked={settings.autostart}
             onChange={(e) => update({ ...settings, autostart: e.target.checked })}
           />
-          <span>随 Windows 启动自动运行</span>
+          <span>Launch automatically at Windows startup</span>
         </label>
       </section>
     </div>

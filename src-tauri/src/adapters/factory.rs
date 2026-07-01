@@ -129,7 +129,7 @@ fn push_bucket(metrics: &mut Vec<UsageMetric>, label: &str, bucket: &Value, rese
 
 pub async fn fetch() -> UsageSnapshot {
     let Some(creds) = decrypt_creds() else {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "未找到 Factory Droid 登录信息");
+        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Factory Droid login not found");
     };
 
     let now = chrono::Utc::now().timestamp();
@@ -142,7 +142,7 @@ pub async fn fetch() -> UsageSnapshot {
                 return UsageSnapshot::error(
                     PROVIDER,
                     DISPLAY_NAME,
-                    "登录状态已过期，请打开一次 Droid CLI 以刷新",
+                    "Login expired - open Droid CLI once to refresh",
                 )
             }
         }
@@ -159,18 +159,18 @@ pub async fn fetch() -> UsageSnapshot {
 
     let resp = match resp {
         Ok(r) => r,
-        Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("请求失败: {e}")),
+        Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Request failed: {e}")),
     };
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "登录状态已过期，请重新登录 Droid CLI");
+        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Login expired - please sign in to Droid CLI again");
     }
     if !resp.status().is_success() {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("接口返回 {}", resp.status()));
+        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("API returned {}", resp.status()));
     }
 
     let body: Result<Value, _> = resp.json().await;
     let Ok(root) = body else {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "响应格式解析失败");
+        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Failed to parse response");
     };
 
     let usage = root.get("usage");
@@ -181,7 +181,7 @@ pub async fn fetch() -> UsageSnapshot {
 
     let mut metrics = Vec::new();
     if let Some(standard) = usage.and_then(|u| u.get("standard")) {
-        push_bucket(&mut metrics, "Standard Usage (30 天)", standard, reset_at);
+        push_bucket(&mut metrics, "Standard Usage (30d)", standard, reset_at);
     }
     if let Some(premium) = usage.and_then(|u| u.get("premium")) {
         let has_allowance = premium
@@ -190,12 +190,12 @@ pub async fn fetch() -> UsageSnapshot {
             .unwrap_or(0.0)
             > 0.0;
         if has_allowance {
-            push_bucket(&mut metrics, "Premium 用量 (30 天)", premium, reset_at);
+            push_bucket(&mut metrics, "Premium Usage (30d)", premium, reset_at);
         }
     }
 
     if metrics.is_empty() {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "暂无可用的用量数据");
+        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "No usage data available");
     }
 
     UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics)

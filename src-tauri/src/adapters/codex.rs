@@ -55,20 +55,20 @@ fn extract_window(root: &Value, key: &str) -> Option<(f64, Option<i64>)> {
 
 pub async fn fetch() -> UsageSnapshot {
     let Some(path) = auth_path() else {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "无法定位用户目录");
+        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Could not locate home directory");
     };
     let Ok(raw) = tokio::fs::read_to_string(&path).await else {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "未找到 Codex 登录信息");
+        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Codex login not found");
     };
     let parsed: Result<AuthFile, _> = serde_json::from_str(&raw);
     let Ok(auth) = parsed else {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "登录信息解析失败");
+        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Failed to parse login credentials");
     };
     let Some(tokens) = auth.tokens else {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "未使用 ChatGPT 账号登录 Codex");
+        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Codex is not logged in with a ChatGPT account");
     };
     let Some(access_token) = tokens.access_token else {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "未使用 ChatGPT 账号登录 Codex");
+        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Codex is not logged in with a ChatGPT account");
     };
 
     let user_agent = detect_user_agent().await;
@@ -83,29 +83,29 @@ pub async fn fetch() -> UsageSnapshot {
 
     let resp = match req.send().await {
         Ok(r) => r,
-        Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("请求失败: {e}")),
+        Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Request failed: {e}")),
     };
 
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
         return UsageSnapshot::error(
             PROVIDER,
             DISPLAY_NAME,
-            "登录状态已过期，请打开一次 Codex CLI 以刷新",
+            "Login expired - open Codex CLI once to refresh",
         );
     }
     if !resp.status().is_success() {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("接口返回 {}", resp.status()));
+        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("API returned {}", resp.status()));
     }
 
     let body: Result<Value, _> = resp.json().await;
     let Ok(root) = body else {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "响应格式解析失败");
+        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Failed to parse response");
     };
 
     let mut metrics = Vec::new();
     if let Some((percent, reset_at)) = extract_window(&root, "primary_window") {
         metrics.push(UsageMetric {
-            label: "主要限额".to_string(),
+            label: "Primary limit".to_string(),
             used: percent,
             limit: Some(100.0),
             percent: Some(percent),
@@ -115,7 +115,7 @@ pub async fn fetch() -> UsageSnapshot {
     }
     if let Some((percent, reset_at)) = extract_window(&root, "secondary_window") {
         metrics.push(UsageMetric {
-            label: "次要限额".to_string(),
+            label: "Secondary limit".to_string(),
             used: percent,
             limit: Some(100.0),
             percent: Some(percent),
@@ -125,7 +125,7 @@ pub async fn fetch() -> UsageSnapshot {
     }
 
     if metrics.is_empty() {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "暂无活跃的用量窗口");
+        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "No active usage window");
     }
 
     UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics)

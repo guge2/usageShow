@@ -29,7 +29,7 @@ impl Default for AppSettings {
 /// "weekly", "monthly credits"). A provider can report more than one metric.
 #[derive(Serialize, Clone, Debug)]
 pub struct UsageMetric {
-    /// Short human label, e.g. "5小时限额" / "周限额" / "Amp Free"
+    /// Short human label, e.g. "5h limit" / "Weekly limit" / "Amp Free"
     pub label: String,
     /// Amount already used, in `unit`.
     pub used: f64,

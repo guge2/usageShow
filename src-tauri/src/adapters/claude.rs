@@ -93,17 +93,17 @@ async fn detect_user_agent() -> String {
 
 pub async fn fetch() -> UsageSnapshot {
     let Some(path) = credentials_path() else {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "无法定位用户目录");
+        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Could not locate home directory");
     };
     let Ok(raw) = tokio::fs::read_to_string(&path).await else {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "未找到 Claude Code 登录信息");
+        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Claude Code login not found");
     };
     let parsed: Result<CredentialsFile, _> = serde_json::from_str(&raw);
     let Ok(creds) = parsed else {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "登录信息解析失败");
+        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Failed to parse login credentials");
     };
     let Some(oauth) = creds.claude_ai_oauth else {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "未使用 OAuth 登录 Claude Code");
+        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Claude Code is not logged in via OAuth");
     };
 
     if let Some(expires_at_ms) = oauth.expires_at {
@@ -112,7 +112,7 @@ pub async fn fetch() -> UsageSnapshot {
             return UsageSnapshot::error(
                 PROVIDER,
                 DISPLAY_NAME,
-                "登录状态已过期，请打开一次 Claude Code 以刷新",
+                "Login expired - open Claude Code once to refresh",
             );
         }
     }
@@ -130,26 +130,26 @@ pub async fn fetch() -> UsageSnapshot {
 
     let resp = match resp {
         Ok(r) => r,
-        Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("请求失败: {e}")),
+        Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Request failed: {e}")),
     };
 
     if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "请求过于频繁，请稍后再试");
+        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Rate limited, please try again later");
     }
     if !resp.status().is_success() {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("接口返回 {}", resp.status()));
+        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("API returned {}", resp.status()));
     }
 
     let body: Result<UsageResponse, _> = resp.json().await;
     let Ok(usage) = body else {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "响应格式解析失败");
+        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Failed to parse response");
     };
 
     let mut metrics = Vec::new();
-    push_window(&mut metrics, "5 小时限额", usage.five_hour);
-    push_window(&mut metrics, "7 天限额", usage.seven_day);
-    push_window(&mut metrics, "7 天限额 (Opus)", usage.seven_day_opus);
-    push_window(&mut metrics, "7 天限额 (Sonnet)", usage.seven_day_sonnet);
+    push_window(&mut metrics, "5h limit", usage.five_hour);
+    push_window(&mut metrics, "7d limit", usage.seven_day);
+    push_window(&mut metrics, "7d limit (Opus)", usage.seven_day_opus);
+    push_window(&mut metrics, "7d limit (Sonnet)", usage.seven_day_sonnet);
     if let Some(extra) = usage.extra_usage {
         if extra.is_enabled.unwrap_or(false) {
             metrics.push(UsageMetric {
@@ -164,7 +164,7 @@ pub async fn fetch() -> UsageSnapshot {
     }
 
     if metrics.is_empty() {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "暂无活跃的用量窗口");
+        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "No active usage window");
     }
 
     UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics)

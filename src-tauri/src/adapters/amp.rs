@@ -32,7 +32,7 @@ pub async fn fetch() -> UsageSnapshot {
 
     let output = match output {
         Ok(o) => o,
-        Err(_) => return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "未检测到 Amp CLI"),
+        Err(_) => return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Amp CLI not detected"),
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -40,7 +40,7 @@ pub async fn fetch() -> UsageSnapshot {
     let combined = format!("{stdout}\n{stderr}");
 
     if !output.status.success() || combined.to_lowercase().contains("not logged in") {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "未登录 Amp 账号");
+        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Not logged in to Amp");
     }
 
     let mut metrics = Vec::new();
@@ -84,7 +84,7 @@ pub async fn fetch() -> UsageSnapshot {
     }
 
     if metrics.is_empty() {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "无法解析 amp usage 输出");
+        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Failed to parse amp usage output");
     }
 
     UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics)

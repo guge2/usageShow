@@ -33,10 +33,10 @@ export const ALL_PROVIDERS: { id: string; label: string }[] = [
 ];
 
 export const REFRESH_INTERVAL_OPTIONS: { value: number; label: string }[] = [
-  { value: 60, label: "1 分钟" },
-  { value: 180, label: "3 分钟" },
-  { value: 300, label: "5 分钟" },
-  { value: 600, label: "10 分钟" },
-  { value: 900, label: "15 分钟" },
-  { value: 1800, label: "30 分钟" },
+  { value: 60, label: "1 minute" },
+  { value: 180, label: "3 minutes" },
+  { value: 300, label: "5 minutes" },
+  { value: 600, label: "10 minutes" },
+  { value: 900, label: "15 minutes" },
+  { value: 1800, label: "30 minutes" },
 ];
