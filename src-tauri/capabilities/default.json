@@ -4,7 +4,6 @@
   "description": "Capability for all app windows",
   "windows": ["main", "settings"],
   "permissions": [
-    "core:default",
-    "opener:default"
+    "core:default"
   ]
 }

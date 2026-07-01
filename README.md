@@ -1,6 +1,6 @@
 # AI 用量监控
 
-Windows 系统托盘小工具，实时展示本机已安装的 AI 编程工具的用量/配额：**Claude Code**、**Codex CLI**、**Cursor**、**Amp**、**Factory Droid**。
+Windows 系统托盘小工具，实时展示本机已安装的 AI 编程工具的用量/配额：**Claude Code**、**Codex CLI**、**Cursor**、**Amp**、**Factory Droid**、**AGY**。
 
 托盘图标常驻，点击弹出小窗，各工具的用量、限额、重置倒计时一目了然；某个工具取数失败或未登录，不影响其他工具正常显示。
 
@@ -40,9 +40,10 @@ npm run tauri build
 |---|---|
 | Claude Code | `~/.claude/.credentials.json`（OAuth）+ Anthropic usage API |
 | Codex CLI | `~/.codex/auth.json` |
-| Cursor | 本地 SQLite（`globalStorage/state.vscdb`） |
+| Cursor | 本地 SQLite（`globalStorage/state.vscdb`）+ Cursor dashboard usage API |
 | Amp | `amp` CLI 输出解析 |
 | Factory Droid | `~/.factory/auth.v2.*` |
+| AGY | `%LOCALAPPDATA%/agy/bin/agy.exe` + `~/.gemini/oauth_creds.json` + Google Code Assist quota API |
 
 ## 已知限制
 

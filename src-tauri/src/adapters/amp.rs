@@ -32,7 +32,9 @@ pub async fn fetch() -> UsageSnapshot {
 
     let output = match output {
         Ok(o) => o,
-        Err(_) => return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Amp CLI not detected"),
+        Err(_) => {
+            return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Amp CLI not detected")
+        }
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -52,7 +54,11 @@ pub async fn fetch() -> UsageSnapshot {
             let remaining: f64 = cap[2].parse().unwrap_or(0.0);
             let limit: f64 = cap[3].parse().unwrap_or(0.0);
             let used = (limit - remaining).max(0.0);
-            let percent = if limit > 0.0 { (used / limit) * 100.0 } else { 0.0 };
+            let percent = if limit > 0.0 {
+                (used / limit) * 100.0
+            } else {
+                0.0
+            };
             metrics.push(UsageMetric {
                 label,
                 used,

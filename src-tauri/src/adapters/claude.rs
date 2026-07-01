@@ -93,7 +93,11 @@ async fn detect_user_agent() -> String {
 
 pub async fn fetch() -> UsageSnapshot {
     let Some(path) = credentials_path() else {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Could not locate home directory");
+        return UsageSnapshot::not_connected(
+            PROVIDER,
+            DISPLAY_NAME,
+            "Could not locate home directory",
+        );
     };
     let Ok(raw) = tokio::fs::read_to_string(&path).await else {
         return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Claude Code login not found");
@@ -103,7 +107,11 @@ pub async fn fetch() -> UsageSnapshot {
         return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Failed to parse login credentials");
     };
     let Some(oauth) = creds.claude_ai_oauth else {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Claude Code is not logged in via OAuth");
+        return UsageSnapshot::not_connected(
+            PROVIDER,
+            DISPLAY_NAME,
+            "Claude Code is not logged in via OAuth",
+        );
     };
 
     if let Some(expires_at_ms) = oauth.expires_at {
@@ -130,14 +138,24 @@ pub async fn fetch() -> UsageSnapshot {
 
     let resp = match resp {
         Ok(r) => r,
-        Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Request failed: {e}")),
+        Err(e) => {
+            return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Request failed: {e}"))
+        }
     };
 
     if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Rate limited, please try again later");
+        return UsageSnapshot::error(
+            PROVIDER,
+            DISPLAY_NAME,
+            "Rate limited, please try again later",
+        );
     }
     if !resp.status().is_success() {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("API returned {}", resp.status()));
+        return UsageSnapshot::error(
+            PROVIDER,
+            DISPLAY_NAME,
+            format!("API returned {}", resp.status()),
+        );
     }
 
     let body: Result<UsageResponse, _> = resp.json().await;

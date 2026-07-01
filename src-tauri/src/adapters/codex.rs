@@ -55,7 +55,11 @@ fn extract_window(root: &Value, key: &str) -> Option<(f64, Option<i64>)> {
 
 pub async fn fetch() -> UsageSnapshot {
     let Some(path) = auth_path() else {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Could not locate home directory");
+        return UsageSnapshot::not_connected(
+            PROVIDER,
+            DISPLAY_NAME,
+            "Could not locate home directory",
+        );
     };
     let Ok(raw) = tokio::fs::read_to_string(&path).await else {
         return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Codex login not found");
@@ -65,10 +69,18 @@ pub async fn fetch() -> UsageSnapshot {
         return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Failed to parse login credentials");
     };
     let Some(tokens) = auth.tokens else {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Codex is not logged in with a ChatGPT account");
+        return UsageSnapshot::not_connected(
+            PROVIDER,
+            DISPLAY_NAME,
+            "Codex is not logged in with a ChatGPT account",
+        );
     };
     let Some(access_token) = tokens.access_token else {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Codex is not logged in with a ChatGPT account");
+        return UsageSnapshot::not_connected(
+            PROVIDER,
+            DISPLAY_NAME,
+            "Codex is not logged in with a ChatGPT account",
+        );
     };
 
     let user_agent = detect_user_agent().await;
@@ -83,7 +95,9 @@ pub async fn fetch() -> UsageSnapshot {
 
     let resp = match req.send().await {
         Ok(r) => r,
-        Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Request failed: {e}")),
+        Err(e) => {
+            return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Request failed: {e}"))
+        }
     };
 
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
@@ -94,7 +108,11 @@ pub async fn fetch() -> UsageSnapshot {
         );
     }
     if !resp.status().is_success() {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("API returned {}", resp.status()));
+        return UsageSnapshot::error(
+            PROVIDER,
+            DISPLAY_NAME,
+            format!("API returned {}", resp.status()),
+        );
     }
 
     let body: Result<Value, _> = resp.json().await;

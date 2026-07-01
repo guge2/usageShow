@@ -64,7 +64,13 @@ fn decrypt_creds() -> Option<FactoryCreds> {
     let cipher = Aes256Gcm16::new(key);
     let nonce = GenericArray::<u8, U16>::from_slice(&iv);
     let plaintext = cipher
-        .decrypt(nonce, Payload { msg: &combined, aad: &[] })
+        .decrypt(
+            nonce,
+            Payload {
+                msg: &combined,
+                aad: &[],
+            },
+        )
         .ok()?;
     serde_json::from_slice(&plaintext).ok()
 }
@@ -80,7 +86,9 @@ fn jwt_exp(token: &str) -> Option<i64> {
     while seg.len() % 4 != 0 {
         seg.push('=');
     }
-    let bytes = base64::engine::general_purpose::STANDARD.decode(&seg).ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&seg)
+        .ok()?;
     let v: Value = serde_json::from_slice(&bytes).ok()?;
     v.get("exp")?.as_i64()
 }
@@ -129,12 +137,18 @@ fn push_bucket(metrics: &mut Vec<UsageMetric>, label: &str, bucket: &Value, rese
 
 pub async fn fetch() -> UsageSnapshot {
     let Some(creds) = decrypt_creds() else {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Factory Droid login not found");
+        return UsageSnapshot::not_connected(
+            PROVIDER,
+            DISPLAY_NAME,
+            "Factory Droid login not found",
+        );
     };
 
     let now = chrono::Utc::now().timestamp();
     let mut access_token = creds.access_token.clone();
-    let needs_refresh = jwt_exp(&access_token).map(|exp| exp <= now + 30).unwrap_or(true);
+    let needs_refresh = jwt_exp(&access_token)
+        .map(|exp| exp <= now + 30)
+        .unwrap_or(true);
     if needs_refresh {
         match refresh_access_token(&creds.refresh_token).await {
             Some(new_token) => access_token = new_token,
@@ -159,13 +173,23 @@ pub async fn fetch() -> UsageSnapshot {
 
     let resp = match resp {
         Ok(r) => r,
-        Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Request failed: {e}")),
+        Err(e) => {
+            return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Request failed: {e}"))
+        }
     };
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Login expired - please sign in to Droid CLI again");
+        return UsageSnapshot::error(
+            PROVIDER,
+            DISPLAY_NAME,
+            "Login expired - please sign in to Droid CLI again",
+        );
     }
     if !resp.status().is_success() {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("API returned {}", resp.status()));
+        return UsageSnapshot::error(
+            PROVIDER,
+            DISPLAY_NAME,
+            format!("API returned {}", resp.status()),
+        );
     }
 
     let body: Result<Value, _> = resp.json().await;

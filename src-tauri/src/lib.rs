@@ -53,7 +53,10 @@ fn persist_settings(app: &AppHandle, settings: &AppSettings) -> std::io::Result<
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, serde_json::to_string_pretty(settings).unwrap_or_default())
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(settings).unwrap_or_default(),
+    )
 }
 
 #[tauri::command]
@@ -110,14 +113,18 @@ async fn open_settings_window(app: AppHandle) -> Result<(), String> {
         let _ = w.set_focus();
         return Ok(());
     }
-    WebviewWindowBuilder::new(&app, SETTINGS_WINDOW, WebviewUrl::App("settings.html".into()))
-        .title("Settings")
-        .inner_size(340.0, 480.0)
-        .resizable(false)
-        .minimizable(false)
-        .center()
-        .build()
-        .map_err(|e| e.to_string())?;
+    WebviewWindowBuilder::new(
+        &app,
+        SETTINGS_WINDOW,
+        WebviewUrl::App("settings.html".into()),
+    )
+    .title("Settings")
+    .inner_size(340.0, 480.0)
+    .resizable(false)
+    .minimizable(false)
+    .center()
+    .build()
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -182,19 +189,9 @@ fn spawn_scheduler(app: AppHandle) {
     });
 }
 
-/// Headless diagnostic entry point: fetches every provider once and prints the
-/// resulting snapshots as JSON, without starting the GUI/tray. Useful for
-/// verifying adapter behaviour against real local credentials.
-pub fn dump_usage() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to start tokio runtime");
-    let snapshots = rt.block_on(adapters::fetch_all());
-    println!("{}", serde_json::to_string_pretty(&snapshots).unwrap());
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -217,19 +214,10 @@ pub fn run() {
                 notify: Notify::new(),
             });
 
-            let force_show = std::env::var("USAGESHOW_FORCE_SHOW").is_ok();
             if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-                if force_show {
-                    position_window_near_tray(&window);
-                    let _ = window.show();
-                } else {
-                    let _ = window.hide();
-                }
+                let _ = window.hide();
                 let w = window.clone();
                 window.on_window_event(move |event| {
-                    if force_show {
-                        return;
-                    }
                     if let tauri::WindowEvent::Focused(false) = event {
                         let _ = w.hide();
                     }

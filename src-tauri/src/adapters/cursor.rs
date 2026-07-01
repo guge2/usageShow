@@ -20,7 +20,8 @@ fn db_path() -> Option<PathBuf> {
 
 fn read_access_token(path: &PathBuf) -> Result<Option<String>, rusqlite::Error> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let mut stmt = conn.prepare("SELECT value FROM ItemTable WHERE key = 'cursorAuth/accessToken'")?;
+    let mut stmt =
+        conn.prepare("SELECT value FROM ItemTable WHERE key = 'cursorAuth/accessToken'")?;
     let mut rows = stmt.query([])?;
     if let Some(row) = rows.next()? {
         let value: String = row.get(0)?;
@@ -30,30 +31,60 @@ fn read_access_token(path: &PathBuf) -> Result<Option<String>, rusqlite::Error> 
     Ok(None)
 }
 
-pub async fn fetch() -> UsageSnapshot {
-    let Some(path) = db_path() else {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Could not locate home directory");
-    };
-    if !path.exists() {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Cursor installation not detected");
+fn parse_millis(value: Option<&Value>) -> Option<i64> {
+    let raw = value
+        .and_then(Value::as_str)
+        .and_then(|s| s.parse::<i64>().ok())
+        .or_else(|| value.and_then(Value::as_i64))?;
+    Some(if raw > 10_000_000_000 {
+        raw / 1000
+    } else {
+        raw
+    })
+}
+
+async fn fetch_dashboard_usage(
+    client: &reqwest::Client,
+    token: &str,
+) -> Result<Option<Vec<UsageMetric>>, String> {
+    let resp = client
+        .post("https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .header("Connect-Protocol-Version", "1")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {e}"))?;
+
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("Login expired - please sign in to Cursor again".to_string());
+    }
+    if !resp.status().is_success() {
+        return Ok(None);
     }
 
-    let path_clone = path.clone();
-    let token_result =
-        tokio::task::spawn_blocking(move || read_access_token(&path_clone)).await;
-
-    let token = match token_result {
-        Ok(Ok(Some(t))) => t,
-        Ok(Ok(None)) => {
-            return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Not logged in to Cursor")
-        }
-        Ok(Err(e)) => {
-            return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Failed to read local database: {e}"))
-        }
-        Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Internal error: {e}")),
+    let root: Value = resp
+        .json()
+        .await
+        .map_err(|_| "Failed to parse response".to_string())?;
+    let Some(usage) = root.get("planUsage") else {
+        return Ok(None);
     };
+    let Some(percent) = usage.get("totalPercentUsed").and_then(Value::as_f64) else {
+        return Ok(None);
+    };
+    Ok(Some(vec![UsageMetric {
+        label: "Monthly included usage".to_string(),
+        used: percent,
+        limit: Some(100.0),
+        percent: Some(percent),
+        unit: "percent".to_string(),
+        reset_at: parse_millis(root.get("billingCycleEnd")),
+    }]))
+}
 
-    let client = super::http_client();
+async fn fetch_legacy_usage(client: &reqwest::Client, token: &str) -> UsageSnapshot {
     let resp = client
         .get("https://api2.cursor.sh/auth/usage")
         .header("Authorization", format!("Bearer {token}"))
@@ -62,14 +93,24 @@ pub async fn fetch() -> UsageSnapshot {
 
     let resp = match resp {
         Ok(r) => r,
-        Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Request failed: {e}")),
+        Err(e) => {
+            return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Request failed: {e}"))
+        }
     };
 
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Login expired - please sign in to Cursor again");
+        return UsageSnapshot::error(
+            PROVIDER,
+            DISPLAY_NAME,
+            "Login expired - please sign in to Cursor again",
+        );
     }
     if !resp.status().is_success() {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("API returned {}", resp.status()));
+        return UsageSnapshot::error(
+            PROVIDER,
+            DISPLAY_NAME,
+            format!("API returned {}", resp.status()),
+        );
     }
 
     let body: Result<Value, _> = resp.json().await;
@@ -87,8 +128,13 @@ pub async fn fetch() -> UsageSnapshot {
         if key == "startOfMonth" {
             continue;
         }
-        let Some(obj) = value.as_object() else { continue };
-        let used = obj.get("numRequests").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let Some(obj) = value.as_object() else {
+            continue;
+        };
+        let used = obj
+            .get("numRequests")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
         let limit = obj
             .get("maxRequestUsage")
             .and_then(|v| v.as_f64())
@@ -121,4 +167,50 @@ pub async fn fetch() -> UsageSnapshot {
     }];
 
     UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics)
+}
+
+pub async fn fetch() -> UsageSnapshot {
+    let Some(path) = db_path() else {
+        return UsageSnapshot::not_connected(
+            PROVIDER,
+            DISPLAY_NAME,
+            "Could not locate home directory",
+        );
+    };
+    if !path.exists() {
+        return UsageSnapshot::not_connected(
+            PROVIDER,
+            DISPLAY_NAME,
+            "Cursor installation not detected",
+        );
+    }
+
+    let path_clone = path.clone();
+    let token_result = tokio::task::spawn_blocking(move || read_access_token(&path_clone)).await;
+
+    let token = match token_result {
+        Ok(Ok(Some(t))) => t,
+        Ok(Ok(None)) => {
+            return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Not logged in to Cursor")
+        }
+        Ok(Err(e)) => {
+            return UsageSnapshot::error(
+                PROVIDER,
+                DISPLAY_NAME,
+                format!("Failed to read local database: {e}"),
+            )
+        }
+        Err(e) => {
+            return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Internal error: {e}"))
+        }
+    };
+
+    let client = super::http_client();
+    match fetch_dashboard_usage(&client, &token).await {
+        Ok(Some(metrics)) => return UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics),
+        Ok(None) => {}
+        Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, e),
+    }
+
+    fetch_legacy_usage(&client, &token).await
 }
