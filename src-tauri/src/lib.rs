@@ -10,12 +10,14 @@ use tauri::{
     AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tokio::sync::Notify;
 
 const MAIN_WINDOW: &str = "main";
 const SETTINGS_WINDOW: &str = "settings";
 const WINDOW_WIDTH: f64 = 360.0;
 const WINDOW_HEIGHT: f64 = 480.0;
+const TOGGLE_SHORTCUT: &str = "alt+c";
 
 struct AppState {
     cache: Mutex<Vec<UsageSnapshot>>,
@@ -197,6 +199,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_usage,
             refresh_usage,
@@ -233,7 +236,9 @@ pub fn run() {
                 });
             }
 
-            let show_item = MenuItemBuilder::with_id("show", "Open Panel").build(app)?;
+            let show_item = MenuItemBuilder::with_id("show", "Open Panel")
+                .accelerator(TOGGLE_SHORTCUT)
+                .build(app)?;
             let settings_item = MenuItemBuilder::with_id("settings", "Settings").build(app)?;
             let refresh_item = MenuItemBuilder::with_id("refresh", "Refresh Now").build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
@@ -283,6 +288,16 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            let shortcut_handle = handle.clone();
+            app.global_shortcut()
+                .on_shortcut(TOGGLE_SHORTCUT, move |_app, _shortcut, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        if let Some(window) = shortcut_handle.get_webview_window(MAIN_WINDOW) {
+                            toggle_window(&window);
+                        }
+                    }
+                })?;
 
             spawn_scheduler(handle);
 
