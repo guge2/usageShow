@@ -39,15 +39,23 @@ fn b64_decode(s: &str) -> Option<Vec<u8>> {
         .ok()
 }
 
-fn decrypt_creds() -> Option<FactoryCreds> {
-    let home = dirs::home_dir()?;
-    let key_raw = std::fs::read_to_string(home.join(".factory").join("auth.v2.key")).ok()?;
+/// Newer Droid CLI releases write credentials as plain JSON to
+/// `auth.encrypted` (despite the name) instead of the legacy AES-GCM
+/// `auth.v2.file`/`auth.v2.key` pair. Support both, preferring whichever
+/// was written most recently.
+fn creds_from_plain_file(path: &std::path::Path) -> Option<FactoryCreds> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn decrypt_creds_v2(dir: &std::path::Path) -> Option<FactoryCreds> {
+    let key_raw = std::fs::read_to_string(dir.join("auth.v2.key")).ok()?;
     let key_bytes = b64_decode(&key_raw)?;
     if key_bytes.len() != 32 {
         return None;
     }
 
-    let file_raw = std::fs::read_to_string(home.join(".factory").join("auth.v2.file")).ok()?;
+    let file_raw = std::fs::read_to_string(dir.join("auth.v2.file")).ok()?;
     let parts: Vec<&str> = file_raw.trim().split(':').collect();
     if parts.len() < 3 {
         return None;
@@ -75,9 +83,32 @@ fn decrypt_creds() -> Option<FactoryCreds> {
     serde_json::from_slice(&plaintext).ok()
 }
 
-/// Reads the `exp` claim out of a JWT's payload segment without verifying
-/// the signature - only used locally to decide whether to refresh.
-fn jwt_exp(token: &str) -> Option<i64> {
+fn mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+fn decrypt_creds() -> Option<FactoryCreds> {
+    let home = dirs::home_dir()?;
+    let dir = home.join(".factory");
+    let plain_path = dir.join("auth.encrypted");
+    let v2_path = dir.join("auth.v2.file");
+
+    let prefer_plain = match (mtime(&plain_path), mtime(&v2_path)) {
+        (Some(p), Some(v)) => p >= v,
+        (Some(_), None) => true,
+        _ => false,
+    };
+
+    if prefer_plain {
+        creds_from_plain_file(&plain_path).or_else(|| decrypt_creds_v2(&dir))
+    } else {
+        decrypt_creds_v2(&dir).or_else(|| creds_from_plain_file(&plain_path))
+    }
+}
+
+/// Decodes a JWT's payload segment without verifying the signature - only
+/// used locally to read claims for refresh/org-id decisions.
+fn jwt_claims(token: &str) -> Option<Value> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
         return None;
@@ -89,8 +120,24 @@ fn jwt_exp(token: &str) -> Option<i64> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&seg)
         .ok()?;
-    let v: Value = serde_json::from_slice(&bytes).ok()?;
-    v.get("exp")?.as_i64()
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn jwt_exp(token: &str) -> Option<i64> {
+    jwt_claims(token)?.get("exp")?.as_i64()
+}
+
+/// Plain-JSON `auth.encrypted` credentials don't carry
+/// `active_organization_id`; fall back to the `external_org_id` claim
+/// embedded in the access token itself. Note: the token's `org_id` claim
+/// is the WorkOS org id, which the Factory API rejects (403 "Requested
+/// active organization is not accessible by this user") - the API expects
+/// `external_org_id` in the `X-Factory-Org-Id` header instead.
+fn jwt_org_id(token: &str) -> Option<String> {
+    jwt_claims(token)?
+        .get("external_org_id")?
+        .as_str()
+        .map(|s| s.to_string())
 }
 
 /// WorkOS's documented refresh-token grant. Never writes the refreshed
@@ -162,7 +209,11 @@ pub async fn fetch() -> UsageSnapshot {
         }
     }
 
-    let org_id = creds.active_organization_id.unwrap_or_default();
+    let org_id = creds
+        .active_organization_id
+        .clone()
+        .or_else(|| jwt_org_id(&creds.access_token))
+        .unwrap_or_default();
     let client = super::http_client();
     let resp = client
         .get("https://api.factory.ai/api/organization/subscription/usage?useCache=true")
