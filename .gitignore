@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Internal release runbook, not meant to be published
+docs/RELEASE.md
