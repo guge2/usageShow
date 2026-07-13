@@ -1,10 +1,11 @@
 .settings-shell {
-  min-height: 100vh;
+  height: 100vh;
   background: var(--bg);
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 16px;
+  overflow-y: auto;
   user-select: none;
 }
 
@@ -25,6 +26,18 @@
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.settings-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.version-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .settings-select {
@@ -56,4 +69,93 @@
   height: 15px;
   accent-color: var(--accent);
   cursor: pointer;
+}
+
+.update-message,
+.update-notes {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.update-message-available,
+.update-message-latest {
+  color: var(--text);
+}
+
+.update-message-error {
+  color: var(--danger);
+  user-select: text;
+}
+
+.update-notes {
+  max-height: 72px;
+  padding: 8px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  border-radius: 8px;
+  background: var(--bg);
+  user-select: text;
+}
+
+.update-button {
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent);
+  color: #ffffff;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.update-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.update-button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.update-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.update-progress-track {
+  flex: 1;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+.update-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.15s ease;
+}
+
+.update-progress-indeterminate {
+  width: 35%;
+  animation: update-progress 1.1s ease-in-out infinite;
+}
+
+@keyframes update-progress {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(320%);
+  }
 }

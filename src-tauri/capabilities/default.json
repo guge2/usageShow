@@ -3,7 +3,5 @@
   "identifier": "default",
   "description": "Capability for all app windows",
   "windows": ["main", "settings"],
-  "permissions": [
-    "core:default"
-  ]
+  "permissions": ["core:default", "process:allow-restart", "updater:default"]
 }

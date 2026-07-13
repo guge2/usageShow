@@ -119,7 +119,7 @@ async fn open_settings_window(app: AppHandle) -> Result<(), String> {
         WebviewUrl::App("settings.html".into()),
     )
     .title("Settings")
-    .inner_size(340.0, 480.0)
+    .inner_size(360.0, 620.0)
     .resizable(false)
     .minimizable(false)
     .center()
@@ -197,6 +197,8 @@ pub fn run() {
             None,
         ))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_usage,
             refresh_usage,

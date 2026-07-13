@@ -1,6 +1,6 @@
 [package]
 name = "tauri-app"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -31,3 +31,5 @@ regex = "1"
 chrono = { version = "0.4", features = ["serde"] }
 aes-gcm = "0.10"
 base64 = "0.22"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
