@@ -31,6 +31,7 @@ export const ALL_PROVIDERS: { id: string; label: string }[] = [
   { id: "amp", label: "Amp" },
   { id: "factory", label: "Factory Droid" },
   { id: "agy", label: "AGY" },
+  { id: "grok", label: "Grok" },
 ];
 
 export const REFRESH_INTERVAL_OPTIONS: { value: number; label: string }[] = [

@@ -4,21 +4,23 @@ pub mod claude;
 pub mod codex;
 pub mod cursor;
 pub mod factory;
+pub mod grok;
 
 use crate::models::UsageSnapshot;
 
 /// Fetch a fresh snapshot from every supported provider, in parallel.
 /// Each adapter is fully isolated: a failure in one never affects the others.
 pub async fn fetch_all() -> Vec<UsageSnapshot> {
-    let (claude, codex, cursor, amp, factory, agy) = tokio::join!(
+    let (claude, codex, cursor, amp, factory, agy, grok) = tokio::join!(
         claude::fetch(),
         codex::fetch(),
         cursor::fetch(),
         amp::fetch(),
         factory::fetch(),
         agy::fetch(),
+        grok::fetch(),
     );
-    vec![claude, codex, cursor, amp, factory, agy]
+    vec![claude, codex, cursor, amp, factory, agy, grok]
 }
 
 /// Shared reqwest client for all adapters (connection pooling, sane timeout).

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A Windows system-tray utility (Tauri v2 + React 19 + TypeScript frontend, Rust backend) that polls usage/quota data from locally installed AI coding tools—Claude Code, Codex CLI, Cursor, Amp, Factory Droid, and AGY—and displays it in a small popup anchored to the system tray.
+A Windows system-tray utility (Tauri v2 + React 19 + TypeScript frontend, Rust backend) that polls usage/quota data from locally installed AI coding tools—Claude Code, Codex CLI, Cursor, Amp, Factory Droid, AGY, and Grok—and displays it in a small popup anchored to the system tray.
 
 ## Common Commands
 

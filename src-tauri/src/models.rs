@@ -7,6 +7,7 @@ pub const ALL_PROVIDERS: &[(&str, &str)] = &[
     ("amp", "Amp"),
     ("factory", "Factory Droid"),
     ("agy", "AGY"),
+    ("grok", "Grok"),
 ];
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

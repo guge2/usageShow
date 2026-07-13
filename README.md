@@ -73,6 +73,7 @@ npm run tauri build
 | Amp | `amp` CLI 输出解析 |
 | Factory Droid | `~/.factory/auth.v2.*` 或 `~/.factory/auth.encrypted` |
 | AGY | `%LOCALAPPDATA%/agy/bin/agy.exe` + `~/.gemini/oauth_creds.json` + Google Code Assist quota API |
+| Grok | `~/.grok/auth.json`（OIDC）+ grok.com billing gRPC-web |
 
 ## 已知限制
 
