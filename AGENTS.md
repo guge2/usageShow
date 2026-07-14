@@ -12,12 +12,20 @@ A Windows system-tray utility (Tauri v2 + React 19 + TypeScript frontend, Rust b
 npm run dev       # Start Vite dev server only (frontend only, no Tauri shell)
 npm run tauri dev # Full app: compile Rust backend, launch tray + popup
 npm run build     # tsc type check + vite build (frontend only, output in dist/)
-npm run tauri build   # Build production installer
+.\build.ps1       # Build only the optimized Release exe (fast default)
 ```
 
 Rust side (under `src-tauri/`): use standard `cargo check` / `cargo build`.
 
 The project has no lint or test scripts configured (no eslint/prettier setup, no test framework).
+
+## Release Workflow
+
+- After normal code changes, use `.\build.ps1`. It enables Cargo incremental compilation, runs `tauri build --no-bundle`, and produces only `src-tauri/target/release/tauri-app.exe`.
+- Keep `src-tauri/target/` between builds so Cargo can reuse compiled dependencies. Clean it only when diagnosing stale build output.
+- Release builds already exclude Rust debug information. Do not publish `.pdb` files.
+- Do not build MSI, multiple installer formats, or updater artifacts locally unless explicitly requested.
+- GitHub tag releases build only the signed NSIS executable and reuse the Rust cache. Use the full multi-bundle build only when explicitly requested.
 
 ## Architecture
 

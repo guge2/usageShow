@@ -25,6 +25,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -38,7 +43,7 @@ jobs:
             throw "Tag $env:TAG_NAME does not match app version v$version"
           }
 
-      - name: Build and publish signed installers
+      - name: Build and publish signed installer
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -53,3 +58,4 @@ jobs:
           updaterJsonPreferNsis: true
           uploadUpdaterJson: true
           tauriScript: npx tauri
+          args: --bundles nsis
