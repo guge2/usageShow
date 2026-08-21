@@ -1,26 +1,41 @@
-import type { UsageSnapshot } from "../types";
+import type { UsageSnapshot, UsageStatus } from "../types";
 import { ProgressBar } from "./ProgressBar";
-import { formatAmount, formatResetIn } from "../utils";
+import { formatAgo, formatAmount, formatResetIn } from "../utils";
 
 interface Props {
   snapshot: UsageSnapshot;
 }
 
+const STATUS_LABEL: Record<Exclude<UsageStatus, "ok">, string> = {
+  not_connected: "Not connected",
+  // Signed in and working — this plan simply has no usage endpoint, so it is
+  // deliberately not styled or worded as a failure.
+  no_quota_api: "No usage API",
+  error: "Error",
+};
+
 export function ProviderCard({ snapshot }: Props) {
-  const { display_name, status, message, metrics } = snapshot;
+  const { display_name, status, message, metrics, stale, updated_at } = snapshot;
+  const hasMetrics = metrics.length > 0;
+  // Showing last-known numbers through a transient failure: label the card as
+  // stale rather than as broken, and say how old the numbers are.
+  const showingStaleData = stale && hasMetrics;
 
   return (
-    <div className={`card card-${status}`}>
+    <div className={`card card-${showingStaleData ? "stale" : status}`}>
       <div className="card-header">
         <span className="provider-name">{display_name}</span>
-        {status !== "ok" && (
-          <span className={`badge badge-${status}`}>
-            {status === "not_connected" ? "Not connected" : "Error"}
-          </span>
-        )}
+        {status !== "ok" &&
+          (showingStaleData ? (
+            <span className="badge badge-stale" title={message ?? undefined}>
+              {formatAgo(updated_at)}
+            </span>
+          ) : (
+            <span className={`badge badge-${status}`}>{STATUS_LABEL[status]}</span>
+          ))}
       </div>
 
-      {status === "ok" && metrics.length > 0 && (
+      {hasMetrics && (
         <div className="metric-list">
           {metrics.map((m) => (
             <div className="metric-row" key={m.label}>
@@ -35,7 +50,9 @@ export function ProviderCard({ snapshot }: Props) {
               {(m.percent !== null || m.reset_at) && (
                 <div className="metric-bottom">
                   {m.percent !== null && <ProgressBar percent={m.percent} />}
-                  {m.reset_at && <span className="metric-reset">{formatResetIn(m.reset_at)}</span>}
+                  {m.reset_at && (
+                    <span className="metric-reset">{formatResetIn(m.reset_at)}</span>
+                  )}
                 </div>
               )}
             </div>
@@ -43,7 +60,9 @@ export function ProviderCard({ snapshot }: Props) {
         </div>
       )}
 
-      {status !== "ok" && message && <p className="card-message">{message}</p>}
+      {status !== "ok" && message && !showingStaleData && (
+        <p className="card-message">{message}</p>
+      )}
     </div>
   );
 }

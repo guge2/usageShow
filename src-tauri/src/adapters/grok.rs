@@ -1,3 +1,4 @@
+use super::FetchCtx;
 use crate::models::{UsageMetric, UsageSnapshot};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -249,7 +250,10 @@ fn parse_unix_ts(v: u64) -> Option<i64> {
     }
 }
 
-fn parse_billing_response(data: &[u8]) -> Result<BillingSnapshot, String> {
+/// `now` (Unix seconds) is injected rather than read from the clock so this
+/// stays a pure function: a captured response can be replayed in a test
+/// forever, instead of the test rotting once its reset time slips into the past.
+fn parse_billing_response(data: &[u8], now: i64) -> Result<BillingSnapshot, String> {
     parse_grpc_status(data)?;
 
     let mut payloads = grpc_web_data_frames(data);
@@ -278,7 +282,6 @@ fn parse_billing_response(data: &[u8]) -> Result<BillingSnapshot, String> {
         .collect();
     candidates.sort_by_key(|(depth, _)| *depth);
 
-    let now = chrono::Utc::now().timestamp();
     // Field paths inside the outer message: period_start=[1,4,1], period_end=[1,5,1].
     let mut period_start: Option<i64> = None;
     let mut preferred_reset: Option<i64> = None;
@@ -327,13 +330,10 @@ fn parse_billing_response(data: &[u8]) -> Result<BillingSnapshot, String> {
     })
 }
 
-fn cycle_label(period_start: Option<i64>, reset_at: Option<i64>) -> String {
+fn cycle_label(period_start: Option<i64>, reset_at: Option<i64>, now: i64) -> String {
     let days = match (period_start, reset_at) {
         (Some(start), Some(end)) if end > start => (end - start) as f64 / 86_400.0,
-        (_, Some(end)) => {
-            let now = chrono::Utc::now().timestamp();
-            ((end - now) as f64 / 86_400.0).abs()
-        }
+        (_, Some(end)) => ((end - now) as f64 / 86_400.0).abs(),
         _ => return "Credits".to_string(),
     };
     if (5.0..=9.0).contains(&days) {
@@ -345,7 +345,7 @@ fn cycle_label(period_start: Option<i64>, reset_at: Option<i64>) -> String {
     }
 }
 
-pub async fn fetch() -> UsageSnapshot {
+pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
     let Some(path) = auth_path() else {
         return UsageSnapshot::not_connected(
             PROVIDER,
@@ -371,8 +371,8 @@ pub async fn fetch() -> UsageSnapshot {
         );
     }
 
-    let client = super::http_client();
-    let resp = client
+    let resp = ctx
+        .client
         .post(BILLING_URL)
         .header("Authorization", format!("Bearer {}", creds.access_token))
         .header("Content-Type", "application/grpc-web+proto")
@@ -388,7 +388,7 @@ pub async fn fetch() -> UsageSnapshot {
     let resp = match resp {
         Ok(r) => r,
         Err(e) => {
-            return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Request failed: {e}"))
+            return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, super::describe_error(&e))
         }
     };
 
@@ -420,14 +420,15 @@ pub async fn fetch() -> UsageSnapshot {
         }
     };
 
-    let billing = match parse_billing_response(&bytes) {
+    let now = crate::models::now_unix();
+    let billing = match parse_billing_response(&bytes, now) {
         Ok(b) => b,
         Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, e),
     };
 
     let percent = billing.used_percent.clamp(0.0, 100.0);
     let metrics = vec![UsageMetric {
-        label: cycle_label(billing.period_start, billing.reset_at),
+        label: cycle_label(billing.period_start, billing.reset_at, now),
         used: percent,
         limit: Some(100.0),
         percent: Some(percent),
@@ -456,12 +457,15 @@ mod tests {
             .split_whitespace()
             .map(|b| u8::from_str_radix(b, 16).unwrap())
             .collect();
-        let billing = parse_billing_response(&bytes).expect("parse");
+        // The moment the frame was captured, so the future-reset filter behaves
+        // as it did live.
+        let captured_at = 1_783_474_600;
+        let billing = parse_billing_response(&bytes, captured_at).expect("parse");
         assert!((billing.used_percent - 21.0).abs() < 0.01);
         assert_eq!(billing.period_start, Some(1_783_474_587));
         assert_eq!(billing.reset_at, Some(1_784_079_387));
         assert_eq!(
-            cycle_label(billing.period_start, billing.reset_at),
+            cycle_label(billing.period_start, billing.reset_at, captured_at),
             "Weekly limit"
         );
     }

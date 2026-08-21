@@ -1,26 +1,42 @@
+//! AGY (Antigravity) usage.
+//!
+//! AGY authenticates through Google OAuth and talks to the internal Code Assist
+//! API. Two things are worth knowing before changing this file:
+//!
+//! 1. The only credential AGY leaves on disk is `~/.gemini/oauth_creds.json`,
+//!    which is issued to the Gemini CLI OAuth client. The running CLI refreshes
+//!    its own token in memory, so the disk copy is usually stale — we refresh it
+//!    ourselves via `refresh_token`.
+//! 2. The quota endpoints (`retrieveUserQuotaSummary` / `retrieveUserQuota`)
+//!    answer `403 PERMISSION_DENIED` on the Google AI Plus tier. Google's own
+//!    upgrade copy confirms this is by design: "Google AI Plus users receive the
+//!    minimum base limits on Antigravity." So a 403 here is not a bug and not an
+//!    expired login — it is the account tier, and we report it as such via
+//!    `no_quota_api` rather than as an error.
+
+use super::creds;
+use super::FetchCtx;
 use crate::models::{UsageMetric, UsageSnapshot};
 use serde::Deserialize;
 use serde_json::Value;
-use std::path::PathBuf;
 
 const PROVIDER: &str = "agy";
 const DISPLAY_NAME: &str = "AGY";
-fn get_client_id() -> String {
+
+/// Split so the literals do not appear verbatim in the binary's string table.
+fn client_id() -> String {
     format!(
         "{}{}{}",
-        "681255809395",
-        "-oo8ft2oprdrnp9e3aqf6av3hmdib135j",
-        ".apps.googleusercontent.com"
+        "681255809395", "-oo8ft2oprdrnp9e3aqf6av3hmdib135j", ".apps.googleusercontent.com"
     )
 }
 
-fn get_client_secret() -> String {
-    format!(
-        "{}{}",
-        "GOCSPX-4uHgMPm",
-        "-1o7Sk-geV6Cu5clXFsxl"
-    )
+fn client_secret() -> String {
+    format!("{}{}", "GOCSPX-4uHgMPm", "-1o7Sk-geV6Cu5clXFsxl")
 }
+
+/// The daily endpoint is what the shipping AGY client actually calls; the others
+/// are fallbacks for older/regional builds.
 const BASE_URLS: &[&str] = &[
     "https://daily-cloudcode-pa.googleapis.com",
     "https://cloudcode-pa.googleapis.com",
@@ -31,6 +47,7 @@ const BASE_URLS: &[&str] = &[
 struct OAuthCreds {
     access_token: Option<String>,
     refresh_token: Option<String>,
+    /// Unix milliseconds.
     expiry_date: Option<i64>,
 }
 
@@ -39,9 +56,9 @@ struct RefreshResponse {
     access_token: String,
 }
 
-fn agy_binary_exists() -> bool {
+fn binary_installed() -> bool {
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        if PathBuf::from(local)
+        if std::path::PathBuf::from(local)
             .join("agy")
             .join("bin")
             .join("agy.exe")
@@ -50,82 +67,81 @@ fn agy_binary_exists() -> bool {
             return true;
         }
     }
-
-    std::env::var_os("PATH")
-        .map(|path| {
-            std::env::split_paths(&path).any(|dir| {
-                dir.join("agy.exe").exists()
-                    || dir.join("agy").exists()
-                    || dir.join("agy.cmd").exists()
-            })
-        })
-        .unwrap_or(false)
+    if creds::home_path(&[".gemini", "bin", "agy.exe"]).is_some_and(|p| p.exists()) {
+        return true;
+    }
+    creds::on_path(&["agy.exe", "agy", "agy.cmd"])
 }
 
-fn creds_path() -> Option<PathBuf> {
-    Some(dirs::home_dir()?.join(".gemini").join("oauth_creds.json"))
-}
-
-async fn access_token(client: &reqwest::Client, creds: OAuthCreds) -> Result<String, String> {
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    if let (Some(token), Some(expiry)) = (&creds.access_token, creds.expiry_date) {
-        if expiry > now_ms + 60_000 {
+async fn access_token(ctx: &FetchCtx, creds_file: OAuthCreds) -> Result<String, String> {
+    let expires_at = creds_file.expiry_date.map(creds::normalize_epoch);
+    if let Some(token) = &creds_file.access_token {
+        if !creds::is_expired(expires_at) {
             return Ok(token.clone());
         }
     }
 
-    let Some(refresh_token) = creds.refresh_token else {
-        return Err("AGY login token is expired - open AGY once to refresh".to_string());
+    let Some(refresh_token) = creds_file.refresh_token else {
+        return Err("AGY login is expired - open AGY once to refresh".to_string());
     };
-    let client_id = get_client_id();
-    let client_secret = get_client_secret();
-    let resp = client
+
+    let response = ctx
+        .client
         .post("https://oauth2.googleapis.com/token")
         .form(&[
-            ("client_id", client_id.as_str()),
-            ("client_secret", client_secret.as_str()),
+            ("client_id", client_id().as_str()),
+            ("client_secret", client_secret().as_str()),
             ("refresh_token", refresh_token.as_str()),
             ("grant_type", "refresh_token"),
         ])
         .send()
         .await
-        .map_err(|e| format!("Failed to refresh AGY login: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("Failed to refresh AGY login: {}", resp.status()));
+        .map_err(|e| format!("Could not refresh AGY login: {}", super::describe_error(&e)))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Could not refresh AGY login ({}) - open AGY once to re-authenticate",
+            response.status()
+        ));
     }
-    resp.json::<RefreshResponse>()
+    response
+        .json::<RefreshResponse>()
         .await
         .map(|r| r.access_token)
-        .map_err(|_| "Failed to parse AGY login refresh response".to_string())
+        .map_err(|_| "Could not read AGY login refresh response".to_string())
 }
 
-async fn post_json(
-    client: &reqwest::Client,
-    url: &str,
+/// One authenticated `v1internal:` call. Returns the HTTP status alongside the
+/// body so callers can tell 403-by-tier apart from a genuine failure.
+async fn call(
+    ctx: &FetchCtx,
+    base: &str,
+    method: &str,
     token: &str,
-    body: Value,
-) -> Result<Value, String> {
-    let resp = client
-        .post(url)
+    body: &Value,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let response = ctx
+        .client
+        .post(format!("{base}/v1internal:{method}"))
         .bearer_auth(token)
         .header("User-Agent", "antigravity/1.0")
         .header(
             "X-Goog-Api-Client",
             "google-cloud-sdk vscode_cloudshelleditor/0.1",
         )
-        .json(&body)
+        .json(body)
         .send()
         .await
-        .map_err(|e| format!("Request failed: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("API returned {}", resp.status()));
-    }
-    resp.json::<Value>()
-        .await
-        .map_err(|_| "Failed to parse response".to_string())
+        .map_err(|e| super::describe_error(&e))?;
+
+    let status = response.status();
+    let parsed = response.json::<Value>().await.unwrap_or(Value::Null);
+    Ok((status, parsed))
 }
 
-async fn load_code_assist(client: &reqwest::Client, token: &str) -> Result<Value, String> {
+/// `loadCodeAssist` is the one endpoint that works on every tier; it carries the
+/// plan information we fall back to when quota is unavailable.
+async fn load_code_assist(ctx: &FetchCtx, token: &str) -> Result<Value, String> {
     let body = serde_json::json!({
         "metadata": {
             "ideType": "ANTIGRAVITY",
@@ -133,48 +149,57 @@ async fn load_code_assist(client: &reqwest::Client, token: &str) -> Result<Value
             "pluginType": "GEMINI",
         }
     });
-    let mut last_error = "No endpoint tried".to_string();
+    let mut last_error = "No endpoint reachable".to_string();
     for base in BASE_URLS {
-        let url = format!("{base}/v1internal:loadCodeAssist");
-        match post_json(client, &url, token, body.clone()).await {
-            Ok(root) => return Ok(root),
+        match call(ctx, base, "loadCodeAssist", token, &body).await {
+            Ok((status, root)) if status.is_success() => return Ok(root),
+            Ok((status, _)) => last_error = format!("loadCodeAssist returned {status}"),
             Err(e) => last_error = e,
         }
     }
     Err(last_error)
 }
 
-async fn fetch_quota(
-    client: &reqwest::Client,
-    token: &str,
-    project: Option<&str>,
-) -> Result<Vec<UsageMetric>, String> {
-    let methods = [
-        "retrieveUserQuotaSummary",
-        "retrieveUserQuota",
-        "fetchAvailableModels",
-    ];
+/// Outcome of asking for quota, so the caller can distinguish "this tier has no
+/// quota API" from "something went wrong".
+enum QuotaOutcome {
+    Metrics(Vec<UsageMetric>),
+    PermissionDenied,
+    Failed(String),
+}
+
+async fn fetch_quota(ctx: &FetchCtx, token: &str, project: Option<&str>) -> QuotaOutcome {
+    // These take a bare `{"project": ...}`; sending the `metadata` block that
+    // `loadCodeAssist` wants makes them reject the payload with 400.
     let body = project
         .map(|p| serde_json::json!({ "project": p }))
         .unwrap_or_else(|| serde_json::json!({}));
-    let mut last_error = "No endpoint tried".to_string();
 
-    for method in methods {
+    let mut denied = false;
+    let mut last_error = "No quota endpoint responded".to_string();
+
+    for method in ["retrieveUserQuotaSummary", "retrieveUserQuota"] {
         for base in BASE_URLS {
-            let url = format!("{base}/v1internal:{method}");
-            match post_json(client, &url, token, body.clone()).await {
-                Ok(root) => {
+            match call(ctx, base, method, token, &body).await {
+                Ok((status, root)) if status.is_success() => {
                     let metrics = parse_metrics(&root);
                     if !metrics.is_empty() {
-                        return Ok(metrics);
+                        return QuotaOutcome::Metrics(metrics);
                     }
-                    last_error = "Quota response did not contain usage fields".to_string();
+                    last_error = "Quota response contained no usage figures".to_string();
                 }
+                Ok((reqwest::StatusCode::FORBIDDEN, _)) => denied = true,
+                Ok((status, _)) => last_error = format!("{method} returned {status}"),
                 Err(e) => last_error = e,
             }
         }
     }
-    Err(last_error)
+
+    if denied {
+        QuotaOutcome::PermissionDenied
+    } else {
+        QuotaOutcome::Failed(last_error)
+    }
 }
 
 fn extract_project(root: &Value) -> Option<String> {
@@ -185,22 +210,17 @@ fn extract_project(root: &Value) -> Option<String> {
         .or_else(|| project.get("id")?.as_str().map(ToString::to_string))
 }
 
-fn extract_tier(root: &Value) -> Option<String> {
-    root.get("currentTier")
-        .and_then(|t| t.get("name").or_else(|| t.get("id")))
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
-}
-
-fn parse_reset(value: Option<&Value>) -> Option<i64> {
-    let value = value?;
-    if let Some(ts) = value.as_i64() {
-        return Some(if ts > 10_000_000_000 { ts / 1000 } else { ts });
-    }
-    value
-        .as_str()
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.timestamp())
+/// The user-facing plan name. `paidTier` carries the real subscription (e.g.
+/// "Google AI Plus") while `currentTier` often stays "free-tier" for
+/// Antigravity even on a paid Google One plan.
+fn extract_plan(root: &Value) -> Option<String> {
+    let name_of = |key: &str| {
+        root.get(key)
+            .and_then(|tier| tier.get("name").or_else(|| tier.get("id")))
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+    };
+    name_of("paidTier").or_else(|| name_of("currentTier"))
 }
 
 fn remaining_fraction(bucket: &Value) -> Option<f64> {
@@ -214,34 +234,23 @@ fn remaining_fraction(bucket: &Value) -> Option<f64> {
         .and_then(Value::as_f64)
 }
 
-fn push_remaining_metric(
+fn bucket_label(bucket: &Value, fallback: &str) -> String {
+    ["displayName", "modelId", "name", "id", "bucketId"]
+        .iter()
+        .find_map(|key| bucket.get(key).and_then(Value::as_str))
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn push_remaining(
     metrics: &mut Vec<UsageMetric>,
     label: String,
     remaining: f64,
     reset_at: Option<i64>,
 ) {
-    let remaining = remaining.clamp(0.0, 1.0);
-    let used = (1.0 - remaining) * 100.0;
-    metrics.push(UsageMetric {
-        label,
-        used,
-        limit: Some(100.0),
-        percent: Some(used),
-        unit: "percent".to_string(),
-        reset_at,
-    });
-}
-
-fn parse_bucket_label(bucket: &Value, fallback: &str) -> String {
-    bucket
-        .get("displayName")
-        .or_else(|| bucket.get("modelId"))
-        .or_else(|| bucket.get("name"))
-        .or_else(|| bucket.get("id"))
-        .or_else(|| bucket.get("bucketId"))
-        .and_then(Value::as_str)
-        .unwrap_or(fallback)
-        .to_string()
+    // The API reports how much is left; the panel shows how much is used.
+    let used = (1.0 - remaining.clamp(0.0, 1.0)) * 100.0;
+    metrics.push(UsageMetric::percent(label, used, reset_at));
 }
 
 fn parse_metrics(root: &Value) -> Vec<UsageMetric> {
@@ -253,34 +262,40 @@ fn parse_metrics(root: &Value) -> Vec<UsageMetric> {
                 .get("displayName")
                 .and_then(Value::as_str)
                 .unwrap_or("Quota");
-            if let Some(buckets) = group.get("buckets").and_then(Value::as_array) {
-                for bucket in buckets {
-                    if let Some(remaining) = remaining_fraction(bucket) {
-                        let label = parse_bucket_label(bucket, group_label);
-                        let reset_at =
-                            parse_reset(bucket.get("resetTime").or_else(|| {
-                                bucket.get("remaining").and_then(|r| r.get("resetTime"))
-                            }));
-                        push_remaining_metric(&mut metrics, label, remaining, reset_at);
-                    }
+            let Some(buckets) = group.get("buckets").and_then(Value::as_array) else {
+                continue;
+            };
+            for bucket in buckets {
+                if let Some(remaining) = remaining_fraction(bucket) {
+                    let reset_at = creds::parse_epoch(
+                        bucket
+                            .get("resetTime")
+                            .or_else(|| bucket.get("remaining").and_then(|r| r.get("resetTime"))),
+                    );
+                    push_remaining(
+                        &mut metrics,
+                        bucket_label(bucket, group_label),
+                        remaining,
+                        reset_at,
+                    );
                 }
             }
         }
     }
 
     for key in ["buckets", "models"] {
-        if let Some(items) = root.get(key).and_then(Value::as_array) {
-            for item in items {
-                let quota = item.get("quotaInfo").unwrap_or(item);
-                if let Some(remaining) = remaining_fraction(quota) {
-                    let label = parse_bucket_label(item, "Quota");
-                    push_remaining_metric(
-                        &mut metrics,
-                        label,
-                        remaining,
-                        parse_reset(quota.get("resetTime")),
-                    );
-                }
+        let Some(items) = root.get(key).and_then(Value::as_array) else {
+            continue;
+        };
+        for item in items {
+            let quota = item.get("quotaInfo").unwrap_or(item);
+            if let Some(remaining) = remaining_fraction(quota) {
+                push_remaining(
+                    &mut metrics,
+                    bucket_label(item, "Quota"),
+                    remaining,
+                    creds::parse_epoch(quota.get("resetTime")),
+                );
             }
         }
     }
@@ -294,12 +309,11 @@ fn parse_metrics(root: &Value) -> Vec<UsageMetric> {
         for config in configs {
             if let Some(quota) = config.get("quotaInfo") {
                 if let Some(remaining) = remaining_fraction(quota) {
-                    let label = parse_bucket_label(config, "Quota");
-                    push_remaining_metric(
+                    push_remaining(
                         &mut metrics,
-                        label,
+                        bucket_label(config, "Quota"),
                         remaining,
-                        parse_reset(quota.get("resetTime")),
+                        creds::parse_epoch(quota.get("resetTime")),
                     );
                 }
             }
@@ -308,52 +322,125 @@ fn parse_metrics(root: &Value) -> Vec<UsageMetric> {
 
     metrics.sort_by(|a, b| a.label.cmp(&b.label));
     metrics.dedup_by(|a, b| a.label == b.label);
-    // ponytail: keep raw model quota lists small enough for the tray card.
+    // Keep raw per-model quota lists small enough for the tray card.
     metrics.truncate(8);
     metrics
 }
 
-pub async fn fetch() -> UsageSnapshot {
-    if !agy_binary_exists() {
+pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
+    if !binary_installed() {
         return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "AGY CLI not detected");
     }
 
-    let Some(path) = creds_path() else {
+    let Some(path) = creds::home_path(&[".gemini", "oauth_creds.json"]) else {
         return UsageSnapshot::not_connected(
             PROVIDER,
             DISPLAY_NAME,
             "Could not locate home directory",
         );
     };
-    let Ok(raw) = tokio::fs::read_to_string(path).await else {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "AGY login not found");
-    };
-    let Ok(creds) = serde_json::from_str::<OAuthCreds>(&raw) else {
-        return UsageSnapshot::error(
-            PROVIDER,
-            DISPLAY_NAME,
-            "Failed to parse AGY login credentials",
-        );
+
+    let stored: OAuthCreds = match creds::read_json(&path).await {
+        Ok(creds) => creds,
+        Err(None) => {
+            return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "AGY login not found")
+        }
+        Err(Some(msg)) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, msg),
     };
 
-    let client = super::http_client();
-    let token = match access_token(&client, creds).await {
+    let token = match access_token(&ctx, stored).await {
         Ok(token) => token,
         Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, e),
     };
-    let loaded = match load_code_assist(&client, &token).await {
+
+    let loaded = match load_code_assist(&ctx, &token).await {
         Ok(root) => root,
         Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, e),
     };
     let project = extract_project(&loaded);
+    let plan = extract_plan(&loaded);
 
-    match fetch_quota(&client, &token, project.as_deref()).await {
-        Ok(metrics) => UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics),
-        Err(e) => {
-            let prefix = extract_tier(&loaded)
-                .map(|tier| format!("Plan detected: {tier}; "))
+    match fetch_quota(&ctx, &token, project.as_deref()).await {
+        QuotaOutcome::Metrics(metrics) => UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics),
+        // Signed in and reachable — this tier simply has no usage API.
+        QuotaOutcome::PermissionDenied => UsageSnapshot::no_quota_api(
+            PROVIDER,
+            DISPLAY_NAME,
+            match &plan {
+                Some(name) => format!("{name} - this plan does not expose usage figures"),
+                None => "This plan does not expose usage figures".to_string(),
+            },
+            Vec::new(),
+        ),
+        QuotaOutcome::Failed(e) => {
+            let prefix = plan
+                .map(|name| format!("{name}; "))
                 .unwrap_or_default();
             UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("{prefix}{e}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn paid_tier_wins_over_current_tier() {
+        // Real shape: Antigravity reports free-tier for an AI Plus subscriber.
+        let root = json!({
+            "currentTier": { "id": "free-tier", "name": "Antigravity" },
+            "paidTier": { "id": "g1-plus-tier", "name": "Google AI Plus" }
+        });
+        assert_eq!(extract_plan(&root).as_deref(), Some("Google AI Plus"));
+    }
+
+    #[test]
+    fn falls_back_to_current_tier() {
+        let root = json!({ "currentTier": { "id": "standard-tier", "name": "Pro" } });
+        assert_eq!(extract_plan(&root).as_deref(), Some("Pro"));
+    }
+
+    #[test]
+    fn project_reads_both_string_and_object_forms() {
+        assert_eq!(
+            extract_project(&json!({ "cloudaicompanionProject": "abc-123" })).as_deref(),
+            Some("abc-123")
+        );
+        assert_eq!(
+            extract_project(&json!({ "cloudaicompanionProject": { "id": "abc-123" } })).as_deref(),
+            Some("abc-123")
+        );
+        assert_eq!(extract_project(&json!({})), None);
+    }
+
+    #[test]
+    fn remaining_fraction_becomes_used_percent() {
+        let root = json!({
+            "groups": [{
+                "displayName": "Gemini",
+                "buckets": [{ "displayName": "Fast", "remainingFraction": 0.25 }]
+            }]
+        });
+        let metrics = parse_metrics(&root);
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0].label, "Fast");
+        assert!((metrics[0].used - 75.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn empty_response_yields_no_metrics() {
+        assert!(parse_metrics(&json!({})).is_empty());
+        assert!(parse_metrics(&json!({ "groups": [] })).is_empty());
+    }
+
+    #[test]
+    fn metric_list_is_capped_for_the_tray_card() {
+        let buckets: Vec<Value> = (0..20)
+            .map(|i| json!({ "displayName": format!("model-{i:02}"), "remainingFraction": 0.5 }))
+            .collect();
+        let root = json!({ "groups": [{ "displayName": "G", "buckets": buckets }] });
+        assert_eq!(parse_metrics(&root).len(), 8);
     }
 }

@@ -1,3 +1,4 @@
+use super::FetchCtx;
 use crate::models::{UsageMetric, UsageSnapshot};
 use aes_gcm::aead::consts::U16;
 use aes_gcm::aead::generic_array::GenericArray;
@@ -142,8 +143,7 @@ fn jwt_org_id(token: &str) -> Option<String> {
 
 /// WorkOS's documented refresh-token grant. Never writes the refreshed
 /// token back to Factory's own credential files - kept in memory only.
-async fn refresh_access_token(refresh_token: &str) -> Option<String> {
-    let client = super::http_client();
+async fn refresh_access_token(client: &reqwest::Client, refresh_token: &str) -> Option<String> {
     let body = serde_json::json!({
         "grant_type": "refresh_token",
         "client_id": WORKOS_CLIENT_ID,
@@ -182,7 +182,7 @@ fn push_bucket(metrics: &mut Vec<UsageMetric>, label: &str, bucket: &Value, rese
     }
 }
 
-pub async fn fetch() -> UsageSnapshot {
+pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
     let Some(creds) = decrypt_creds() else {
         return UsageSnapshot::not_connected(
             PROVIDER,
@@ -197,7 +197,7 @@ pub async fn fetch() -> UsageSnapshot {
         .map(|exp| exp <= now + 30)
         .unwrap_or(true);
     if needs_refresh {
-        match refresh_access_token(&creds.refresh_token).await {
+        match refresh_access_token(&ctx.client, &creds.refresh_token).await {
             Some(new_token) => access_token = new_token,
             None => {
                 return UsageSnapshot::error(
@@ -214,8 +214,8 @@ pub async fn fetch() -> UsageSnapshot {
         .clone()
         .or_else(|| jwt_org_id(&creds.access_token))
         .unwrap_or_default();
-    let client = super::http_client();
-    let resp = client
+    let resp = ctx
+        .client
         .get("https://api.factory.ai/api/organization/subscription/usage?useCache=true")
         .header("Authorization", format!("Bearer {access_token}"))
         .header("X-Factory-Org-Id", &org_id)
@@ -225,7 +225,7 @@ pub async fn fetch() -> UsageSnapshot {
     let resp = match resp {
         Ok(r) => r,
         Err(e) => {
-            return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Request failed: {e}"))
+            return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, super::describe_error(&e))
         }
     };
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {

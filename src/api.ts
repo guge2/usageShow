@@ -3,7 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import type { AppSettings, UsageSnapshot } from "./types";
+import type {
+  AppSettings,
+  ProviderInfo,
+  ProxyStatus,
+  UsageSnapshot,
+} from "./types";
 
 export interface AppUpdateProgress {
   downloaded: number;
@@ -30,6 +35,16 @@ export function getSettings(): Promise<AppSettings> {
 
 export function saveSettings(settings: AppSettings): Promise<void> {
   return invoke("save_settings", { settings });
+}
+
+/** The registered providers, so the UI never keeps its own copy of the list. */
+export function listProviders(): Promise<ProviderInfo[]> {
+  return invoke("list_providers");
+}
+
+/** What the proxy setting actually resolved to, shown in Settings. */
+export function getProxyStatus(): Promise<ProxyStatus> {
+  return invoke("get_proxy_status");
 }
 
 export function openSettingsWindow(): Promise<void> {

@@ -159,3 +159,38 @@
     transform: translateX(320%);
   }
 }
+
+.settings-input {
+  font-size: 13px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.settings-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* What the proxy setting actually resolved to. Muted by default;
+   highlighted only when a proxy is genuinely in use. */
+.proxy-status {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 0;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--border);
+  word-break: break-all;
+}
+
+.proxy-status-active {
+  color: var(--text);
+}

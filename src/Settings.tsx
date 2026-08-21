@@ -2,19 +2,23 @@ import { useEffect, useState } from "react";
 import {
   checkForAppUpdate,
   getAppVersion,
+  getProxyStatus,
   getSettings,
   installAppUpdate,
+  listProviders,
   relaunchApp,
   saveSettings,
 } from "./api";
 import type { AppUpdateProgress, AvailableAppUpdate } from "./api";
-import { ALL_PROVIDERS, REFRESH_INTERVAL_OPTIONS } from "./types";
-import type { AppSettings } from "./types";
+import { PROXY_MODE_OPTIONS, REFRESH_INTERVAL_OPTIONS } from "./types";
+import type { AppSettings, ProviderInfo, ProxyMode, ProxyStatus } from "./types";
 import "./App.css";
 import "./Settings.css";
 
 function Settings() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null);
   const [currentVersion, setCurrentVersion] = useState("");
   const [availableUpdate, setAvailableUpdate] =
     useState<AvailableAppUpdate | null>(null);
@@ -34,15 +38,26 @@ function Settings() {
     useState<AppUpdateProgress | null>(null);
 
   useEffect(() => {
-    getSettings().then(setSettings);
+    void getSettings().then(setSettings);
+    void listProviders().then(setProviders);
+    void refreshProxyStatus();
     getAppVersion()
       .then(setCurrentVersion)
       .catch(() => setCurrentVersion("Unknown"));
   }, []);
 
-  function updateSettings(next: AppSettings) {
+  function refreshProxyStatus() {
+    return getProxyStatus()
+      .then(setProxyStatus)
+      .catch(() => setProxyStatus(null));
+  }
+
+  async function updateSettings(next: AppSettings) {
     setSettings(next);
-    void saveSettings(next);
+    await saveSettings(next);
+    // Re-read what the backend resolved, so the proxy line reflects the change
+    // that was actually saved rather than what the UI assumed.
+    await refreshProxyStatus();
   }
 
   function toggleProvider(id: string) {
@@ -50,7 +65,7 @@ function Settings() {
     const enabled = settings.enabled_providers.includes(id)
       ? settings.enabled_providers.filter((p) => p !== id)
       : [...settings.enabled_providers, id];
-    updateSettings({ ...settings, enabled_providers: enabled });
+    void updateSettings({ ...settings, enabled_providers: enabled });
   }
 
   async function checkForUpdates() {
@@ -126,7 +141,7 @@ function Settings() {
           className="settings-select"
           value={settings.refresh_interval_secs}
           onChange={(e) =>
-            updateSettings({
+            void updateSettings({
               ...settings,
               refresh_interval_secs: Number(e.target.value),
             })
@@ -143,17 +158,65 @@ function Settings() {
       <section className="settings-section">
         <h3>Visible tools</h3>
         <div className="checkbox-list">
-          {ALL_PROVIDERS.map((p) => (
+          {providers.map((p) => (
             <label key={p.id} className="checkbox-row">
               <input
                 type="checkbox"
                 checked={settings.enabled_providers.includes(p.id)}
                 onChange={() => toggleProvider(p.id)}
               />
-              <span>{p.label}</span>
+              <span>{p.display_name}</span>
             </label>
           ))}
         </div>
+      </section>
+
+      <section className="settings-section">
+        <h3>Network</h3>
+        <select
+          className="settings-select"
+          value={settings.proxy_mode}
+          onChange={(e) =>
+            void updateSettings({
+              ...settings,
+              proxy_mode: e.target.value as ProxyMode,
+            })
+          }
+        >
+          {PROXY_MODE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+        <p className="settings-hint">
+          {
+            PROXY_MODE_OPTIONS.find((o) => o.value === settings.proxy_mode)
+              ?.hint
+          }
+        </p>
+
+        {settings.proxy_mode === "manual" && (
+          <input
+            className="settings-input"
+            type="text"
+            spellCheck={false}
+            placeholder="127.0.0.1:7890"
+            defaultValue={settings.proxy_url}
+            onBlur={(e) =>
+              void updateSettings({ ...settings, proxy_url: e.target.value.trim() })
+            }
+          />
+        )}
+
+        {proxyStatus && (
+          <p
+            className={`proxy-status${proxyStatus.active ? " proxy-status-active" : ""}`}
+            aria-live="polite"
+          >
+            {proxyStatus.description}
+          </p>
+        )}
       </section>
 
       <section className="settings-section">
@@ -163,7 +226,7 @@ function Settings() {
             type="checkbox"
             checked={settings.autostart}
             onChange={(e) =>
-              updateSettings({ ...settings, autostart: e.target.checked })
+              void updateSettings({ ...settings, autostart: e.target.checked })
             }
           />
           <span>Launch automatically at Windows startup</span>

@@ -1,3 +1,4 @@
+use super::FetchCtx;
 use crate::models::{UsageMetric, UsageSnapshot};
 use regex::Regex;
 use std::path::PathBuf;
@@ -18,7 +19,7 @@ fn amp_binary() -> PathBuf {
     PathBuf::from("amp")
 }
 
-pub async fn fetch() -> UsageSnapshot {
+pub async fn fetch(_ctx: FetchCtx) -> UsageSnapshot {
     let bin = amp_binary();
     // The app runs under the Windows GUI subsystem (no console). Bun-compiled
     // binaries like amp.exe probe stdin at startup and crash with

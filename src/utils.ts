@@ -28,3 +28,13 @@ function formatCompactNumber(value: number): string {
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
   return `${Math.round(value)}`;
 }
+
+/** Compact "how long ago" label for data kept from an earlier fetch. */
+export function formatAgo(ts: number): string {
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ago`;
+}

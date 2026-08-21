@@ -1,3 +1,4 @@
+use super::FetchCtx;
 use crate::models::{UsageMetric, UsageSnapshot};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
@@ -55,7 +56,7 @@ async fn fetch_dashboard_usage(
         .json(&serde_json::json!({}))
         .send()
         .await
-        .map_err(|e| format!("Request failed: {e}"))?;
+        .map_err(|e| super::describe_error(&e))?;
 
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
         return Err("Login expired - please sign in to Cursor again".to_string());
@@ -94,7 +95,7 @@ async fn fetch_legacy_usage(client: &reqwest::Client, token: &str) -> UsageSnaps
     let resp = match resp {
         Ok(r) => r,
         Err(e) => {
-            return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Request failed: {e}"))
+            return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, super::describe_error(&e))
         }
     };
 
@@ -169,7 +170,7 @@ async fn fetch_legacy_usage(client: &reqwest::Client, token: &str) -> UsageSnaps
     UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics)
 }
 
-pub async fn fetch() -> UsageSnapshot {
+pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
     let Some(path) = db_path() else {
         return UsageSnapshot::not_connected(
             PROVIDER,
@@ -205,12 +206,12 @@ pub async fn fetch() -> UsageSnapshot {
         }
     };
 
-    let client = super::http_client();
-    match fetch_dashboard_usage(&client, &token).await {
+    let client = &ctx.client;
+    match fetch_dashboard_usage(client, &token).await {
         Ok(Some(metrics)) => return UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics),
         Ok(None) => {}
         Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, e),
     }
 
-    fetch_legacy_usage(&client, &token).await
+    fetch_legacy_usage(client, &token).await
 }

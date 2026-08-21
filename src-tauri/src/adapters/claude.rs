@@ -1,12 +1,15 @@
+use super::creds;
+use super::FetchCtx;
 use crate::models::{UsageMetric, UsageSnapshot};
 use serde::Deserialize;
-use std::path::PathBuf;
+use tokio::sync::OnceCell;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 const PROVIDER: &str = "claude";
 const DISPLAY_NAME: &str = "Claude";
+const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 
 #[derive(Deserialize)]
 struct CredentialsFile {
@@ -18,6 +21,7 @@ struct CredentialsFile {
 struct OauthBlock {
     #[serde(rename = "accessToken")]
     access_token: String,
+    /// Unix milliseconds.
     #[serde(rename = "expiresAt")]
     expires_at: Option<i64>,
 }
@@ -45,68 +49,65 @@ struct UsageResponse {
     extra_usage: Option<ExtraUsage>,
 }
 
-fn credentials_path() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    Some(home.join(".claude").join(".credentials.json"))
-}
-
-fn parse_reset_at(iso: &Option<String>) -> Option<i64> {
-    iso.as_ref()
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.timestamp())
+/// Best-effort detection of the installed Claude Code version, used to build an
+/// authentic `claude-code/<version>` User-Agent. Anthropic's usage endpoint
+/// rate-limits aggressively without it.
+///
+/// Cached for the process lifetime: the version does not change under a running
+/// tray app, and spawning a subprocess on every refresh cycle is pure overhead.
+async fn user_agent() -> &'static str {
+    static UA: OnceCell<String> = OnceCell::const_new();
+    UA.get_or_init(|| async {
+        let mut cmd = tokio::process::Command::new("claude");
+        cmd.arg("--version").stdin(std::process::Stdio::null());
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        match cmd.output().await {
+            Ok(out) if out.status.success() => {
+                let text = String::from_utf8_lossy(&out.stdout);
+                let version = text.split_whitespace().next().unwrap_or("2.0.0");
+                format!("claude-code/{version}")
+            }
+            _ => "claude-code/2.0.0".to_string(),
+        }
+    })
+    .await
+    .as_str()
 }
 
 fn push_window(metrics: &mut Vec<UsageMetric>, label: &str, window: Option<UsageWindow>) {
     if let Some(w) = window {
         if let Some(pct) = w.utilization {
-            metrics.push(UsageMetric {
-                label: label.to_string(),
-                used: pct,
-                limit: Some(100.0),
-                percent: Some(pct),
-                unit: "percent".to_string(),
-                reset_at: parse_reset_at(&w.resets_at),
-            });
+            metrics.push(UsageMetric::percent(
+                label,
+                pct,
+                creds::parse_rfc3339(&w.resets_at),
+            ));
         }
     }
 }
 
-/// Best-effort detection of the locally installed Claude Code version, used to
-/// build an authentic `claude-code/<version>` User-Agent header. Anthropic's
-/// usage endpoint rate-limits requests aggressively unless this prefix is present.
-async fn detect_user_agent() -> String {
-    let fallback = "claude-code/2.0.0".to_string();
-    let mut cmd = tokio::process::Command::new("claude");
-    cmd.arg("--version").stdin(std::process::Stdio::null());
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    let output = cmd.output().await;
-    match output {
-        Ok(out) if out.status.success() => {
-            let text = String::from_utf8_lossy(&out.stdout);
-            let version = text.split_whitespace().next().unwrap_or("2.0.0");
-            format!("claude-code/{version}")
-        }
-        _ => fallback,
-    }
-}
-
-pub async fn fetch() -> UsageSnapshot {
-    let Some(path) = credentials_path() else {
+pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
+    let Some(path) = creds::home_path(&[".claude", ".credentials.json"]) else {
         return UsageSnapshot::not_connected(
             PROVIDER,
             DISPLAY_NAME,
             "Could not locate home directory",
         );
     };
-    let Ok(raw) = tokio::fs::read_to_string(&path).await else {
-        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Claude Code login not found");
+
+    let file: CredentialsFile = match creds::read_json(&path).await {
+        Ok(file) => file,
+        // On macOS the OAuth token lives in the Keychain, so a missing file
+        // does not necessarily mean "not logged in" — but it does mean there is
+        // nothing here for us to read.
+        Err(None) => {
+            return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Claude Code login not found")
+        }
+        Err(Some(msg)) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, msg),
     };
-    let parsed: Result<CredentialsFile, _> = serde_json::from_str(&raw);
-    let Ok(creds) = parsed else {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Failed to parse login credentials");
-    };
-    let Some(oauth) = creds.claude_ai_oauth else {
+
+    let Some(oauth) = file.claude_ai_oauth else {
         return UsageSnapshot::not_connected(
             PROVIDER,
             DISPLAY_NAME,
@@ -114,52 +115,57 @@ pub async fn fetch() -> UsageSnapshot {
         );
     };
 
-    if let Some(expires_at_ms) = oauth.expires_at {
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        if now_ms > expires_at_ms {
-            return UsageSnapshot::error(
-                PROVIDER,
-                DISPLAY_NAME,
-                "Login expired - open Claude Code once to refresh",
-            );
-        }
+    let expires_at_secs = oauth.expires_at.map(creds::normalize_epoch);
+    if creds::is_expired(expires_at_secs) {
+        return UsageSnapshot::error(
+            PROVIDER,
+            DISPLAY_NAME,
+            "Login expired - open Claude Code once to refresh",
+        );
     }
 
-    let user_agent = detect_user_agent().await;
-    let client = super::http_client();
-    let resp = client
-        .get("https://api.anthropic.com/api/oauth/usage")
-        .header("Authorization", format!("Bearer {}", oauth.access_token))
+    let response = ctx
+        .client
+        .get(USAGE_URL)
+        .bearer_auth(&oauth.access_token)
         .header("anthropic-beta", "oauth-2025-04-20")
-        .header("User-Agent", user_agent)
+        .header("User-Agent", user_agent().await)
         .header("Content-Type", "application/json")
         .send()
         .await;
 
-    let resp = match resp {
+    let response = match response {
         Ok(r) => r,
-        Err(e) => {
-            return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Request failed: {e}"))
-        }
+        Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, super::describe_error(&e)),
     };
 
-    if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        return UsageSnapshot::error(
-            PROVIDER,
-            DISPLAY_NAME,
-            "Rate limited, please try again later",
-        );
-    }
-    if !resp.status().is_success() {
-        return UsageSnapshot::error(
-            PROVIDER,
-            DISPLAY_NAME,
-            format!("API returned {}", resp.status()),
-        );
+    match response.status() {
+        reqwest::StatusCode::TOO_MANY_REQUESTS => {
+            return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Rate limited, try again later")
+        }
+        reqwest::StatusCode::UNAUTHORIZED => {
+            return UsageSnapshot::error(
+                PROVIDER,
+                DISPLAY_NAME,
+                "Login expired - open Claude Code once to refresh",
+            )
+        }
+        // Anthropic answers a blocked/unroutable origin with 403 rather than a
+        // connection error, which reads as an auth problem but usually is not.
+        reqwest::StatusCode::FORBIDDEN => {
+            return UsageSnapshot::error(
+                PROVIDER,
+                DISPLAY_NAME,
+                "Request refused (403) - the API may be unreachable from this network; check the proxy setting",
+            )
+        }
+        status if !status.is_success() => {
+            return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("API returned {status}"))
+        }
+        _ => {}
     }
 
-    let body: Result<UsageResponse, _> = resp.json().await;
-    let Ok(usage) = body else {
+    let Ok(usage) = response.json::<UsageResponse>().await else {
         return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Failed to parse response");
     };
 
@@ -168,6 +174,7 @@ pub async fn fetch() -> UsageSnapshot {
     push_window(&mut metrics, "7d limit", usage.seven_day);
     push_window(&mut metrics, "7d limit (Opus)", usage.seven_day_opus);
     push_window(&mut metrics, "7d limit (Sonnet)", usage.seven_day_sonnet);
+
     if let Some(extra) = usage.extra_usage {
         if extra.is_enabled.unwrap_or(false) {
             metrics.push(UsageMetric {
@@ -184,6 +191,5 @@ pub async fn fetch() -> UsageSnapshot {
     if metrics.is_empty() {
         return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "No active usage window");
     }
-
     UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics)
 }

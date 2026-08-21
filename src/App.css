@@ -161,6 +161,19 @@ body,
   background: var(--border);
 }
 
+.badge-no_quota_api {
+  color: var(--text-muted);
+  background: var(--border);
+}
+
+/* Last-known numbers shown through a transient failure. Muted, not alarming:
+   the data on screen is real, just not from this instant. */
+.badge-stale {
+  color: var(--text-muted);
+  background: var(--border);
+  font-variant-numeric: tabular-nums;
+}
+
 .badge-error {
   color: #ffffff;
   background: var(--danger);
