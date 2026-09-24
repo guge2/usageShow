@@ -13,6 +13,7 @@ npm run dev       # Start Vite dev server only (frontend only, no Tauri shell)
 npm run tauri dev # Full app: compile Rust backend, launch tray + popup
 npm run build     # tsc type check + vite build (frontend only, output in dist/)
 npm run tauri build   # Build production installer
+.\build.ps1           # Windows: build only the optimized release exe (no installer)
 ```
 
 Rust side (under `src-tauri/`):
@@ -96,15 +97,35 @@ and the vendor CLIs work fine.
 
 `ProxyMode::Auto` (the default) checks the proxy environment variables first,
 then `HKCU\...\Internet Settings`. `Off` forces a direct connection; `Manual`
-uses the address from Settings. The resolved source is surfaced in the Settings
-window via `get_proxy_status`.
+uses the address from Settings. HTTP and SOCKS (`socks5://`, `socks5h://`, …)
+proxies are supported; a registry `socks=` entry maps to `socks5h://`. An
+address `reqwest` cannot use resolves to `ProxySource::Invalid` rather than
+silently going direct. The resolved source is surfaced in the Settings window
+via `get_proxy_status`.
+
+### App lifecycle
+
+`tauri-plugin-single-instance` is registered first in `lib.rs`: a second launch
+shows the existing panel instead of adding a second tray icon and polling loop.
+The tray panel hides on blur; `window::toggle` ignores a toggle that arrives
+right after a blur-hide, because that is the same tray click that caused it.
+
+The popup does not trigger a refresh on mount—the scheduler's first cycle is
+already running at launch—so the frontend reads the cache and waits for the
+`usage-updated` push.
+
+`get_settings` reports `autostart` from the OS (`autolaunch().is_enabled()`),
+not the stored flag, since the user can change it outside the app.
 
 ### Shared types
 
 `UsageSnapshot`, `UsageMetric`, `AppSettings`, `ProxyMode` are manually kept in
 sync between `models.rs` and `types.ts`; update both when changing structures.
-`AppSettings` fields use `#[serde(default)]` so configs written by older
-versions keep loading.
+`AppSettings` carries a struct-level `#[serde(default)]`, so a config missing
+any field keeps its other values instead of being replaced by defaults.
+
+`UsageSnapshot::or_previous` carries the last good metrics (flagged `stale`)
+through an `Error` only; `NotConnected` and `NoQuotaApi` are shown as they are.
 
 ## Provider notes
 
@@ -127,6 +148,5 @@ rotting once their reset time slips into the past.
 ### Known Cross-Platform Gaps
 
 The project is developed and distributed for Windows; adapter path resolution is
-otherwise platform-agnostic. Two known issues would break on macOS/Linux:
-- `adapters/amp.rs` hardcodes `amp.exe` when probing `~/.amp/bin`; on non-Windows the binary is `amp`.
+otherwise platform-agnostic. One known issue would break on macOS:
 - `adapters/claude.rs` only reads `~/.claude/.credentials.json`; on macOS Claude Code stores OAuth credentials in the Keychain, so that file often does not exist even when logged in.

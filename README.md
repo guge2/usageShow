@@ -11,7 +11,7 @@
   <img alt="tech" src="https://img.shields.io/badge/Tauri-v2-24C8DB" />
 </p>
 
-Windows 系统托盘小工具，实时展示本机已安装的 AI 编程工具的用量/配额：**Claude Code**、**Codex CLI**、**Cursor**、**Amp**、**Factory Droid**、**AGY**。
+Windows 系统托盘小工具，实时展示本机已安装的 AI 编程工具的用量/配额：**Claude Code**、**Codex CLI**、**Cursor**、**Amp**、**Factory Droid**、**AGY**、**Grok**。
 
 托盘图标常驻，点击弹出小窗，各工具的用量、限额、重置倒计时一目了然；某个工具取数失败或未登录，不影响其他工具正常显示。
 
@@ -25,6 +25,7 @@ Windows 系统托盘小工具，实时展示本机已安装的 AI 编程工具�
 
 - 托盘弹窗展示各工具当前用量、限额百分比、重置倒计时
 - 设置窗口可选择要监控哪些工具、刷新间隔、是否开机自启
+- 网络代理：默认自动读取 `HTTPS_PROXY`/`HTTP_PROXY` 与 Windows 系统代理，也可手动指定 HTTP 或 SOCKS5 代理
 - 可在设置窗口检查新版本、查看下载进度并自动安装重启
 - 后台按设定间隔自动轮询，也可手动立即刷新
 - 各工具适配器相互隔离，单个工具取数失败不影响其他工具
@@ -73,7 +74,7 @@ npx tauri build
 | 工具 | 数据来源 |
 |---|---|
 | Claude Code | `~/.claude/.credentials.json`（OAuth）+ Anthropic usage API |
-| Codex CLI | `~/.codex/auth.json` |
+| Codex CLI | `~/.codex/auth.json` + ChatGPT usage API |
 | Cursor | 本地 SQLite（`globalStorage/state.vscdb`）+ Cursor dashboard usage API |
 | Amp | `amp` CLI 输出解析 |
 | Factory Droid | `~/.factory/auth.v2.*` 或 `~/.factory/auth.encrypted` |
@@ -82,7 +83,7 @@ npx tauri build
 
 ## 已知限制
 
-目前仅在 Windows 上开发和验证；`amp` 二进制探测与 Claude 凭据读取在 macOS 上存在已知的兼容性缺口（详见 `CLAUDE.md`）。
+目前仅在 Windows 上开发和验证；Claude 凭据读取在 macOS 上存在已知的兼容性缺口（macOS 版 Claude Code 把凭据存在钥匙串中，详见 `CLAUDE.md`）。
 
 ## 贡献
 
