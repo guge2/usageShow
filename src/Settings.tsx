@@ -19,6 +19,7 @@ function Settings() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [currentVersion, setCurrentVersion] = useState("");
   const [availableUpdate, setAvailableUpdate] =
     useState<AvailableAppUpdate | null>(null);
@@ -53,8 +54,18 @@ function Settings() {
   }
 
   async function updateSettings(next: AppSettings) {
+    const previous = settings;
     setSettings(next);
-    await saveSettings(next);
+    try {
+      await saveSettings(next);
+      setSaveError(null);
+    } catch (error) {
+      // Nothing was persisted (e.g. the OS refused launch-at-startup), so put
+      // the controls back to what is actually in effect.
+      setSettings(previous);
+      setSaveError(error instanceof Error ? error.message : String(error));
+      return;
+    }
     // Re-read what the backend resolved, so the proxy line reflects the change
     // that was actually saved rather than what the UI assumed.
     await refreshProxyStatus();
@@ -135,6 +146,12 @@ function Settings() {
 
   return (
     <div className="settings-shell">
+      {saveError && (
+        <p className="settings-error" role="alert">
+          Couldn't save settings: {saveError}
+        </p>
+      )}
+
       <section className="settings-section">
         <h3>Refresh interval</h3>
         <select

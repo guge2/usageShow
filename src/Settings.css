@@ -194,3 +194,10 @@
 .proxy-status-active {
   color: var(--text);
 }
+
+.settings-error {
+  font-size: 11px;
+  color: var(--danger);
+  margin: 0;
+  line-height: 1.4;
+}

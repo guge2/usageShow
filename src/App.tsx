@@ -1,5 +1,11 @@
-import { useEffect, useState, useCallback } from "react";
-import { getUsage, refreshUsage, onUsageUpdated, openSettingsWindow } from "./api";
+import { useEffect, useRef, useState, useCallback } from "react";
+import {
+  getSettings,
+  getUsage,
+  refreshUsage,
+  onUsageUpdated,
+  openSettingsWindow,
+} from "./api";
 import type { UsageSnapshot } from "./types";
 import { ProviderCard } from "./components/ProviderCard";
 import { formatUpdatedAt } from "./utils";
@@ -44,26 +50,55 @@ function GearIcon() {
 
 function App() {
   const [snapshots, setSnapshots] = useState<UsageSnapshot[]>([]);
+  // Whether a refresh result has arrived, so an empty list can be told apart
+  // from "still loading" (it is also what every provider being disabled looks like).
+  const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
+  const receivedPush = useRef(false);
+
+  const applyFresh = useCallback((fresh: UsageSnapshot[]) => {
+    receivedPush.current = true;
+    setSnapshots(fresh);
+    setLoaded(true);
+  }, []);
 
   useEffect(() => {
-    getUsage().then(setSnapshots);
-    refreshUsage().then(setSnapshots);
-    const unlisten = onUsageUpdated(setSnapshots);
+    // This window is created at app launch, while the backend scheduler is
+    // already running its first refresh. Triggering another refresh here would
+    // hit every provider twice at startup, so just listen for its result and
+    // show whatever is cached meanwhile.
+    const unlisten = onUsageUpdated(applyFresh);
+    unlisten
+      .then(() => getUsage())
+      .then((cached) => {
+        // A pushed update may have landed first; it is newer than the cache read.
+        if (receivedPush.current) return;
+        if (cached.length > 0) {
+          setSnapshots(cached);
+          setLoaded(true);
+          return;
+        }
+        // An empty cache means either no refresh has finished yet, or nothing
+        // is enabled - in which case no push with data will ever arrive.
+        return getSettings().then((settings) => {
+          if (!receivedPush.current && settings.enabled_providers.length === 0) {
+            setLoaded(true);
+          }
+        });
+      });
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, []);
+  }, [applyFresh]);
 
   const handleRefresh = useCallback(async () => {
     setLoading(true);
     try {
-      const fresh = await refreshUsage();
-      setSnapshots(fresh);
+      applyFresh(await refreshUsage());
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [applyFresh]);
 
   const lastUpdated =
     snapshots.length > 0 ? Math.max(...snapshots.map((s) => s.updated_at)) : null;
@@ -95,7 +130,9 @@ function App() {
 
       <main className="app-body">
         {snapshots.length === 0 ? (
-          <p className="empty-state">Loading...</p>
+          <p className="empty-state">
+            {loaded ? "No tools enabled. Choose some in Settings." : "Loading..."}
+          </p>
         ) : (
           snapshots.map((s) => <ProviderCard key={s.provider} snapshot={s} />)
         )}

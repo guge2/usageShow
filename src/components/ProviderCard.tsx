@@ -47,10 +47,10 @@ export function ProviderCard({ snapshot }: Props) {
                     : `${formatAmount(m.used, m.unit)} remaining`}
                 </span>
               </div>
-              {(m.percent !== null || m.reset_at) && (
+              {(m.percent !== null || m.reset_at !== null) && (
                 <div className="metric-bottom">
                   {m.percent !== null && <ProgressBar percent={m.percent} />}
-                  {m.reset_at && (
+                  {m.reset_at !== null && (
                     <span className="metric-reset">{formatResetIn(m.reset_at)}</span>
                   )}
                 </div>

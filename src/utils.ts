@@ -6,7 +6,7 @@ export function formatResetIn(resetAt: number): string {
   const days = Math.floor(totalMinutes / 1440);
   const hours = Math.floor((totalMinutes % 1440) / 60);
   const minutes = totalMinutes % 60;
-  if (days > 0) return `Resets in ${days}d`;
+  if (days > 0) return hours > 0 ? `Resets in ${days}d ${hours}h` : `Resets in ${days}d`;
   if (hours > 0) return `Resets in ${hours}h ${minutes}m`;
   return `Resets in ${minutes}m`;
 }
