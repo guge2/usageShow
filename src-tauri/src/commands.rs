@@ -18,9 +18,19 @@ pub async fn refresh_usage(app: AppHandle) -> Result<Vec<UsageSnapshot>, String>
     Ok(state::refresh(&app).await)
 }
 
+/// `autostart` is reported from the OS, not from the settings file: the user
+/// can disable the entry elsewhere (e.g. Task Manager's Startup tab), and the
+/// checkbox should show what will actually happen at the next login.
 #[tauri::command]
-pub async fn get_settings(state: tauri::State<'_, AppState>) -> Result<AppSettings, String> {
-    Ok(state.settings())
+pub async fn get_settings(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<AppSettings, String> {
+    let mut settings = state.settings();
+    if let Ok(enabled) = app.autolaunch().is_enabled() {
+        settings.autostart = enabled;
+    }
+    Ok(settings)
 }
 
 /// The provider list, so the frontend does not maintain its own copy.
@@ -48,9 +58,13 @@ pub async fn save_settings(
     settings: AppSettings,
 ) -> Result<(), String> {
     // Apply the autostart side effect first: if the OS refuses, nothing is
-    // persisted and the UI stays consistent with reality.
-    if settings.autostart != state.settings().autostart {
-        let autolaunch = app.autolaunch();
+    // persisted and the UI stays consistent with reality. Compare against the
+    // OS state rather than the stored flag, which can drift from it.
+    let autolaunch = app.autolaunch();
+    let currently_enabled = autolaunch
+        .is_enabled()
+        .unwrap_or_else(|_| state.settings().autostart);
+    if settings.autostart != currently_enabled {
         let result = if settings.autostart {
             autolaunch.enable()
         } else {

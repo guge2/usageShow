@@ -1,3 +1,4 @@
+use super::creds;
 use super::FetchCtx;
 use crate::models::{UsageMetric, UsageSnapshot};
 use rusqlite::{Connection, OpenFlags};
@@ -32,16 +33,14 @@ fn read_access_token(path: &PathBuf) -> Result<Option<String>, rusqlite::Error> 
     Ok(None)
 }
 
-fn parse_millis(value: Option<&Value>) -> Option<i64> {
-    let raw = value
+/// Connect-protocol JSON encodes int64 as a string, so accept a numeric
+/// string as well as anything `creds::parse_epoch` understands.
+fn parse_timestamp(value: Option<&Value>) -> Option<i64> {
+    value
         .and_then(Value::as_str)
         .and_then(|s| s.parse::<i64>().ok())
-        .or_else(|| value.and_then(Value::as_i64))?;
-    Some(if raw > 10_000_000_000 {
-        raw / 1000
-    } else {
-        raw
-    })
+        .map(creds::normalize_epoch)
+        .or_else(|| creds::parse_epoch(value))
 }
 
 async fn fetch_dashboard_usage(
@@ -81,7 +80,7 @@ async fn fetch_dashboard_usage(
         limit: Some(100.0),
         percent: Some(percent),
         unit: "percent".to_string(),
-        reset_at: parse_millis(root.get("billingCycleEnd")),
+        reset_at: parse_timestamp(root.get("billingCycleEnd")),
     }]))
 }
 

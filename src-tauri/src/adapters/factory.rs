@@ -249,10 +249,7 @@ pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
     };
 
     let usage = root.get("usage");
-    let reset_at = usage
-        .and_then(|u| u.get("endDate"))
-        .and_then(|v| v.as_i64())
-        .map(|ms| ms / 1000);
+    let reset_at = super::creds::parse_epoch(usage.and_then(|u| u.get("endDate")));
 
     let mut metrics = Vec::new();
     if let Some(standard) = usage.and_then(|u| u.get("standard")) {

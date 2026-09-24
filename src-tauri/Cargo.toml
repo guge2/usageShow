@@ -1,8 +1,8 @@
 [package]
 name = "tauri-app"
 version = "0.3.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "System-tray monitor for AI coding tool usage quotas"
+authors = ["guge2"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -21,9 +21,10 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks"] }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "process", "macros", "sync"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 dirs = "5"

@@ -13,6 +13,12 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Must be registered first. A second launch (e.g. autostart plus a
+        // manual start) would otherwise add another tray icon and a second
+        // polling loop, doubling requests against rate-limited APIs.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            window::show_main(app);
+        }))
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,

@@ -1,7 +1,7 @@
+use super::creds;
 use super::FetchCtx;
 use crate::models::{UsageMetric, UsageSnapshot};
 use serde_json::Value;
-use std::path::PathBuf;
 
 const PROVIDER: &str = "grok";
 const DISPLAY_NAME: &str = "Grok";
@@ -10,11 +10,6 @@ const BILLING_URL: &str = "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrok
 struct GrokCreds {
     access_token: String,
     expires_at: Option<i64>,
-}
-
-fn auth_path() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    Some(home.join(".grok").join("auth.json"))
 }
 
 /// Prefer SuperGrok OIDC entries (`https://auth.x.ai::<client-id>`), then any
@@ -33,7 +28,7 @@ fn load_creds(raw: &str) -> Option<GrokCreds> {
         if token.is_empty() {
             continue;
         }
-        let expires_at = parse_expires_at(entry.get("expires_at"));
+        let expires_at = creds::parse_epoch(entry.get("expires_at"));
         let creds = GrokCreds {
             access_token: token.to_string(),
             expires_at,
@@ -46,24 +41,6 @@ fn load_creds(raw: &str) -> Option<GrokCreds> {
     }
 
     preferred.or(fallback)
-}
-
-fn parse_expires_at(value: Option<&Value>) -> Option<i64> {
-    let value = value?;
-    if let Some(ts) = value.as_i64() {
-        return Some(if ts > 10_000_000_000 { ts / 1000 } else { ts });
-    }
-    value
-        .as_str()
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.timestamp())
-}
-
-fn is_expired(expires_at: Option<i64>) -> bool {
-    match expires_at {
-        Some(exp) => chrono::Utc::now().timestamp() >= exp - 30,
-        None => false,
-    }
 }
 
 /// Empty gRPC-web framed message: flag=0, length=0.
@@ -346,7 +323,7 @@ fn cycle_label(period_start: Option<i64>, reset_at: Option<i64>, now: i64) -> St
 }
 
 pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
-    let Some(path) = auth_path() else {
+    let Some(path) = creds::home_path(&[".grok", "auth.json"]) else {
         return UsageSnapshot::not_connected(
             PROVIDER,
             DISPLAY_NAME,
@@ -356,14 +333,14 @@ pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
     let Ok(raw) = tokio::fs::read_to_string(&path).await else {
         return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Grok Build login not found");
     };
-    let Some(creds) = load_creds(&raw) else {
+    let Some(login) = load_creds(&raw) else {
         return UsageSnapshot::not_connected(
             PROVIDER,
             DISPLAY_NAME,
             "Grok Build is not logged in - run `grok login`",
         );
     };
-    if is_expired(creds.expires_at) {
+    if creds::is_expired(login.expires_at) {
         return UsageSnapshot::error(
             PROVIDER,
             DISPLAY_NAME,
@@ -374,7 +351,7 @@ pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
     let resp = ctx
         .client
         .post(BILLING_URL)
-        .header("Authorization", format!("Bearer {}", creds.access_token))
+        .header("Authorization", format!("Bearer {}", login.access_token))
         .header("Content-Type", "application/grpc-web+proto")
         .header("Accept", "application/grpc-web+proto")
         .header("x-grpc-web", "1")

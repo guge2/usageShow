@@ -1,3 +1,4 @@
+use super::creds;
 use super::FetchCtx;
 use crate::models::{UsageMetric, UsageSnapshot};
 use regex::Regex;
@@ -9,9 +10,10 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const PROVIDER: &str = "amp";
 const DISPLAY_NAME: &str = "Amp";
 
+const BINARY_NAME: &str = if cfg!(windows) { "amp.exe" } else { "amp" };
+
 fn amp_binary() -> PathBuf {
-    if let Some(home) = dirs::home_dir() {
-        let candidate = home.join(".amp").join("bin").join("amp.exe");
+    if let Some(candidate) = creds::home_path(&[".amp", "bin", BINARY_NAME]) {
         if candidate.exists() {
             return candidate;
         }
@@ -42,8 +44,23 @@ pub async fn fetch(_ctx: FetchCtx) -> UsageSnapshot {
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let combined = format!("{stdout}\n{stderr}");
 
-    if !output.status.success() || combined.to_lowercase().contains("not logged in") {
+    if combined.to_lowercase().contains("not logged in") {
         return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Not logged in to Amp");
+    }
+    // Any other failure (network, a CLI crash) is a real error, not a missing
+    // login - reporting it as "not logged in" would send the user the wrong way.
+    if !output.status.success() {
+        let detail = stderr
+            .lines()
+            .chain(stdout.lines())
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("no output");
+        return UsageSnapshot::error(
+            PROVIDER,
+            DISPLAY_NAME,
+            format!("amp usage failed ({}): {detail}", output.status),
+        );
     }
 
     let mut metrics = Vec::new();

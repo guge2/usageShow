@@ -15,15 +15,16 @@ pub enum ProxyMode {
     Manual,
 }
 
+/// Every field falls back to `AppSettings::default()` when absent, so a config
+/// written by an older version (or edited by hand) keeps its other values
+/// instead of being discarded wholesale.
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
 pub struct AppSettings {
     pub refresh_interval_secs: u64,
     pub enabled_providers: Vec<String>,
     pub autostart: bool,
-    /// Absent in configs written before proxy support existed.
-    #[serde(default)]
     pub proxy_mode: ProxyMode,
-    #[serde(default)]
     pub proxy_url: String,
 }
 
@@ -187,10 +188,14 @@ impl UsageSnapshot {
     /// A rate-limit or a blip should not wipe the panel: keep the last known
     /// metrics, flag them stale, and let the message explain why. Returns the
     /// failure untouched when there is nothing usable to fall back to.
+    ///
+    /// Only `Error` is backfilled. `NotConnected` (logged out, uninstalled) and
+    /// `NoQuotaApi` (the tier has no usage figures) are settled states, not
+    /// hiccups; showing old numbers next to them would misrepresent the account.
     pub fn or_previous(self, previous: Option<&UsageSnapshot>) -> Self {
-        // Nothing to repair: it succeeded, or it already carries its own data
-        // (e.g. a `no_quota_api` result with partial info).
-        if self.status == UsageStatus::Ok || !self.metrics.is_empty() {
+        // Nothing to repair: not a transient failure, or it already carries
+        // its own data.
+        if self.status != UsageStatus::Error || !self.metrics.is_empty() {
             return self;
         }
         let Some(previous) = previous else {
@@ -295,9 +300,31 @@ mod tests {
 
         let merged = info.or_previous(Some(&previous));
 
-        // It has no metrics, so the previous ones are reused - but the status
-        // and its explanation survive.
+        assert!(!merged.stale);
+        assert!(merged.metrics.is_empty());
         assert_eq!(merged.status, UsageStatus::NoQuotaApi);
         assert_eq!(merged.message.as_deref(), Some("Google AI Plus"));
+    }
+
+    #[test]
+    fn logging_out_does_not_resurrect_old_numbers() {
+        let previous = ok_snapshot(60);
+        let gone = UsageSnapshot::not_connected("claude", "Claude", "Claude Code login not found");
+
+        let merged = gone.or_previous(Some(&previous));
+
+        assert!(!merged.stale);
+        assert!(merged.metrics.is_empty());
+    }
+
+    #[test]
+    fn settings_with_missing_fields_keep_the_ones_present() {
+        let settings: AppSettings = serde_json::from_str(r#"{"autostart":true}"#).unwrap();
+        let defaults = AppSettings::default();
+
+        assert!(settings.autostart);
+        assert_eq!(settings.refresh_interval_secs, defaults.refresh_interval_secs);
+        assert_eq!(settings.enabled_providers, defaults.enabled_providers);
+        assert_eq!(settings.proxy_mode, ProxyMode::Auto);
     }
 }

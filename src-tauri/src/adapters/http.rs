@@ -21,12 +21,16 @@ pub enum ProxySource {
     Environment(String),
     SystemRegistry(String),
     Manual(String),
+    /// A manual address the HTTP client cannot use. Kept distinct from `None`
+    /// so Settings says why the connection is direct instead of implying the
+    /// address was accepted.
+    Invalid(String),
 }
 
 impl ProxySource {
     pub fn url(&self) -> Option<&str> {
         match self {
-            ProxySource::None => None,
+            ProxySource::None | ProxySource::Invalid(_) => None,
             ProxySource::Environment(u) | ProxySource::SystemRegistry(u) | ProxySource::Manual(u) => {
                 Some(u)
             }
@@ -40,6 +44,9 @@ impl ProxySource {
             ProxySource::Environment(u) => format!("Environment variable: {u}"),
             ProxySource::SystemRegistry(u) => format!("Windows system proxy: {u}"),
             ProxySource::Manual(u) => format!("Manual: {u}"),
+            ProxySource::Invalid(u) => {
+                format!("Invalid proxy address \"{u}\" - connecting directly")
+            }
         }
     }
 }
@@ -54,9 +61,10 @@ pub fn normalize_proxy(raw: &str) -> Option<String> {
         return None;
     }
 
-    // Per-scheme list: prefer the https entry, fall back to http, then any.
+    // Per-scheme list: prefer the https entry, then http, then socks.
     if raw.contains('=') {
-        let mut fallback = None;
+        let mut http = None;
+        let mut socks = None;
         for part in raw.split(';') {
             let part = part.trim();
             let Some((scheme, addr)) = part.split_once('=') else {
@@ -67,30 +75,59 @@ pub fn normalize_proxy(raw: &str) -> Option<String> {
                 continue;
             }
             match scheme.trim().to_ascii_lowercase().as_str() {
-                "https" => return normalize_proxy(addr),
-                "http" | "socks" => {
-                    if fallback.is_none() {
-                        fallback = Some(addr.to_string());
-                    }
+                "https" => return with_scheme(addr, "http"),
+                "http" => {
+                    http.get_or_insert(addr);
+                }
+                "socks" => {
+                    socks.get_or_insert(addr);
                 }
                 _ => {}
             }
         }
-        return fallback.as_deref().and_then(normalize_proxy);
+        // A `socks=` entry is a SOCKS server: speaking HTTP to it cannot work.
+        // `socks5h` also resolves DNS through the proxy, which matters when
+        // the proxy exists to get around the local network in the first place.
+        return http
+            .and_then(|addr| with_scheme(addr, "http"))
+            .or_else(|| socks.and_then(|addr| with_scheme(addr, "socks5h")));
     }
 
-    if raw.contains("://") {
-        Some(raw.to_string())
+    with_scheme(raw, "http")
+}
+
+/// Prefix `default_scheme://` unless the address already names a scheme.
+fn with_scheme(addr: &str, default_scheme: &str) -> Option<String> {
+    let addr = addr.trim();
+    if addr.is_empty() {
+        None
+    } else if addr.contains("://") {
+        Some(addr.to_string())
     } else {
-        Some(format!("http://{raw}"))
+        Some(format!("{default_scheme}://{addr}"))
     }
+}
+
+/// Whether the HTTP client can actually use this proxy URL. `reqwest` only
+/// checks the scheme when a request is made, so an unsupported one would
+/// otherwise look accepted in Settings and then fail on every fetch.
+fn is_usable(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    matches!(
+        parsed.scheme(),
+        "http" | "https" | "socks4" | "socks4a" | "socks5" | "socks5h"
+    ) && parsed.host_str().is_some_and(|host| !host.is_empty())
+        && reqwest::Proxy::all(url).is_ok()
 }
 
 fn env_proxy() -> Option<String> {
     ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"]
         .iter()
         .filter_map(|key| std::env::var(key).ok())
-        .find_map(|value| normalize_proxy(&value))
+        .filter_map(|value| normalize_proxy(&value))
+        .find(|url| is_usable(url))
 }
 
 /// Read the proxy Windows itself is configured to use (the same setting the
@@ -108,7 +145,7 @@ fn system_proxy() -> Option<String> {
         return None;
     }
     let server: String = key.get_value("ProxyServer").ok()?;
-    normalize_proxy(&server)
+    normalize_proxy(&server).filter(|url| is_usable(url))
 }
 
 #[cfg(not(windows))]
@@ -120,9 +157,11 @@ fn system_proxy() -> Option<String> {
 pub fn resolve_proxy(mode: &ProxyMode, manual_url: &str) -> ProxySource {
     match mode {
         ProxyMode::Off => ProxySource::None,
-        ProxyMode::Manual => normalize_proxy(manual_url)
-            .map(ProxySource::Manual)
-            .unwrap_or(ProxySource::None),
+        ProxyMode::Manual => match normalize_proxy(manual_url) {
+            Some(url) if is_usable(&url) => ProxySource::Manual(url),
+            Some(_) => ProxySource::Invalid(manual_url.trim().to_string()),
+            None => ProxySource::None,
+        },
         ProxyMode::Auto => {
             if let Some(url) = env_proxy() {
                 ProxySource::Environment(url)
@@ -213,6 +252,37 @@ mod tests {
             normalize_proxy("ftp=9.9.9.9:21;http=1.1.1.1:80").as_deref(),
             Some("http://1.1.1.1:80")
         );
+    }
+
+    #[test]
+    fn socks_entry_is_spoken_to_as_socks() {
+        assert_eq!(
+            normalize_proxy("socks=127.0.0.1:1080").as_deref(),
+            Some("socks5h://127.0.0.1:1080")
+        );
+    }
+
+    #[test]
+    fn per_scheme_list_prefers_http_over_socks() {
+        assert_eq!(
+            normalize_proxy("socks=127.0.0.1:1080;http=127.0.0.1:7890").as_deref(),
+            Some("http://127.0.0.1:7890")
+        );
+    }
+
+    #[test]
+    fn manual_socks5_proxy_is_accepted() {
+        assert_eq!(
+            resolve_proxy(&ProxyMode::Manual, "socks5://127.0.0.1:1080"),
+            ProxySource::Manual("socks5://127.0.0.1:1080".to_string())
+        );
+    }
+
+    #[test]
+    fn unusable_manual_address_is_reported_not_hidden() {
+        let resolved = resolve_proxy(&ProxyMode::Manual, "bogus://127.0.0.1:1080");
+        assert_eq!(resolved, ProxySource::Invalid("bogus://127.0.0.1:1080".to_string()));
+        assert_eq!(resolved.url(), None);
     }
 
     #[test]
