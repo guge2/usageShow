@@ -361,7 +361,9 @@ pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
     let plan = extract_plan(&loaded);
 
     match fetch_quota(&ctx, &token, project.as_deref()).await {
-        QuotaOutcome::Metrics(metrics) => UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics),
+        QuotaOutcome::Metrics(metrics) => {
+            UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics).with_plan(plan)
+        }
         // Signed in and reachable — this tier simply has no usage API.
         QuotaOutcome::PermissionDenied => UsageSnapshot::no_quota_api(
             PROVIDER,

@@ -13,8 +13,12 @@ export interface UsageMetric {
   used: number;
   limit: number | null;
   percent: number | null;
+  /** "percent" | "usd" | "requests" | "tokens" | "credits" */
   unit: string;
+  /** Unix seconds when this window resets. */
   reset_at: number | null;
+  /** Unix seconds when the current window started (enables pace). */
+  starts_at: number | null;
 }
 
 export interface UsageSnapshot {
@@ -23,9 +27,12 @@ export interface UsageSnapshot {
   status: UsageStatus;
   message: string | null;
   metrics: UsageMetric[];
+  /** Unix seconds when `metrics` were read. */
   updated_at: number;
   /** Metrics carried over from an earlier fetch because this one failed. */
   stale: boolean;
+  plan: string | null;
+  account: string | null;
 }
 
 export interface ProviderInfo {
@@ -35,12 +42,18 @@ export interface ProviderInfo {
 
 export type ProxyMode = "auto" | "off" | "manual";
 
+export type LanguageSetting = "auto" | "en" | "zh";
+
 export interface AppSettings {
   refresh_interval_secs: number;
   enabled_providers: string[];
   autostart: boolean;
   proxy_mode: ProxyMode;
   proxy_url: string;
+  show_remaining: boolean;
+  /** 0 disables alerts. */
+  alert_threshold: number;
+  language: LanguageSetting;
 }
 
 /** What the backend resolved the proxy setting to, for display only. */
@@ -49,15 +62,11 @@ export interface ProxyStatus {
   active: boolean;
 }
 
-export const REFRESH_INTERVAL_OPTIONS: { value: number; label: string }[] = [
-  { value: 60, label: "1 minute" },
-  { value: 180, label: "3 minutes" },
-  { value: 300, label: "5 minutes" },
-  { value: 600, label: "10 minutes" },
-  { value: 900, label: "15 minutes" },
-  { value: 1800, label: "30 minutes" },
-];
+export const REFRESH_INTERVAL_OPTIONS: number[] = [60, 180, 300, 600, 900, 1800];
 
+export const ALERT_THRESHOLD_OPTIONS: number[] = [0, 70, 80, 90, 95];
+
+/** Labels and hints are English i18n keys. */
 export const PROXY_MODE_OPTIONS: { value: ProxyMode; label: string; hint: string }[] = [
   {
     value: "auto",

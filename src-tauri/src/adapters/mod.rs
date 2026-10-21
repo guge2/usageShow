@@ -109,6 +109,33 @@ pub fn provider_infos() -> Vec<ProviderInfo> {
         .collect()
 }
 
+/// Fetch one provider, retrying once on a transient connection failure.
+async fn fetch_with_retry(fetch: fn(FetchCtx) -> BoxedFetch, ctx: FetchCtx) -> UsageSnapshot {
+    let snapshot = fetch(ctx.clone()).await;
+    // A momentary network blip should not turn into a red card on the
+    // panel; one retry absorbs it. Deterministic failures (expired login,
+    // 403, rate limit) are not retried.
+    if is_transient(&snapshot) {
+        tokio::time::sleep(RETRY_DELAY).await;
+        return fetch(ctx).await;
+    }
+    snapshot
+}
+
+/// Fetch a single provider (the per-card refresh). `None` for an unknown id.
+pub async fn fetch_one(id: &str, ctx: FetchCtx) -> Option<UsageSnapshot> {
+    let provider = PROVIDERS.iter().find(|p| p.id == id)?;
+    let fetch = provider.fetch;
+    let (display_name, id) = (provider.display_name, provider.id);
+    // Spawned so an adapter panic becomes an error row, as in `fetch_enabled`.
+    let snapshot = tokio::spawn(fetch_with_retry(fetch, ctx))
+        .await
+        .unwrap_or_else(|_| {
+            UsageSnapshot::error(id, display_name, "Adapter crashed while fetching")
+        });
+    Some(snapshot)
+}
+
 /// Fetch the enabled providers concurrently, preserving registry order.
 ///
 /// Only enabled providers are contacted. The previous implementation fetched
@@ -127,17 +154,7 @@ pub async fn fetch_enabled(enabled: &[String], ctx: FetchCtx) -> Vec<UsageSnapsh
     for (index, provider) in selected {
         let fetch = provider.fetch;
         let ctx = ctx.clone();
-        tasks.spawn(async move {
-            let mut snapshot = fetch(ctx.clone()).await;
-            // A momentary network blip should not turn into a red card on the
-            // panel; one retry absorbs it. Deterministic failures (expired
-            // login, 403, rate limit) are not retried.
-            if is_transient(&snapshot) {
-                tokio::time::sleep(RETRY_DELAY).await;
-                snapshot = fetch(ctx).await;
-            }
-            (index, snapshot)
-        });
+        tasks.spawn(async move { (index, fetch_with_retry(fetch, ctx).await) });
     }
 
     let mut results: Vec<(usize, UsageSnapshot)> = Vec::new();

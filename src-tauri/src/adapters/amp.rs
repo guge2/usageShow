@@ -84,6 +84,7 @@ pub async fn fetch(_ctx: FetchCtx) -> UsageSnapshot {
                 percent: Some(percent),
                 unit: "usd".to_string(),
                 reset_at: None,
+                starts_at: None,
             });
         }
     }
@@ -103,6 +104,7 @@ pub async fn fetch(_ctx: FetchCtx) -> UsageSnapshot {
                 percent: None,
                 unit: "usd".to_string(),
                 reset_at: None,
+                starts_at: None,
             });
         }
     }

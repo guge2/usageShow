@@ -1,6 +1,6 @@
 [package]
 name = "tauri-app"
-version = "0.3.0"
+version = "0.4.0"
 description = "System-tray monitor for AI coding tool usage quotas"
 authors = ["guge2"]
 edition = "2021"
@@ -34,6 +34,8 @@ aes-gcm = "0.10"
 base64 = "0.22"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+tauri-plugin-notification = "2"
+sys-locale = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

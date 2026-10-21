@@ -201,3 +201,17 @@
   margin: 0;
   line-height: 1.4;
 }
+
+/* A label with its control on the right (language, used/left, alerts). */
+.field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.field-row .settings-select {
+  flex-shrink: 0;
+  min-width: 120px;
+}

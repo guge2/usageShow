@@ -25,6 +25,24 @@ export function refreshUsage(): Promise<UsageSnapshot[]> {
   return invoke("refresh_usage");
 }
 
+/** Refresh one provider only (the per-card refresh button). */
+export function refreshProvider(provider: string): Promise<UsageSnapshot[]> {
+  return invoke("refresh_provider", { provider });
+}
+
+/** Report the panel's content height; the window resizes to fit it. */
+export function fitPanel(height: number): Promise<void> {
+  return invoke("fit_panel", { height });
+}
+
+export function onSettingsUpdated(cb: (settings: AppSettings) => void) {
+  return listen<AppSettings>("settings-updated", (event) => cb(event.payload));
+}
+
+export function onPanelShown(cb: () => void) {
+  return listen("panel-shown", () => cb());
+}
+
 export function onUsageUpdated(cb: (data: UsageSnapshot[]) => void) {
   return listen<UsageSnapshot[]>("usage-updated", (event) => cb(event.payload));
 }

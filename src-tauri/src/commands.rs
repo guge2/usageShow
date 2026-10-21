@@ -4,9 +4,13 @@ use crate::adapters::{self, http};
 use crate::config;
 use crate::models::{AppSettings, ProviderInfo, ProxyStatus, UsageSnapshot};
 use crate::state::{self, AppState};
-use crate::window;
-use tauri::AppHandle;
+use crate::{tray, window};
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_autostart::ManagerExt;
+
+/// Pushed to every window after a save, so the panel picks up display
+/// settings (language, used/left) without a reload.
+pub const SETTINGS_UPDATED: &str = "settings-updated";
 
 #[tauri::command]
 pub async fn get_usage(state: tauri::State<'_, AppState>) -> Result<Vec<UsageSnapshot>, String> {
@@ -16,6 +20,19 @@ pub async fn get_usage(state: tauri::State<'_, AppState>) -> Result<Vec<UsageSna
 #[tauri::command]
 pub async fn refresh_usage(app: AppHandle) -> Result<Vec<UsageSnapshot>, String> {
     Ok(state::refresh(&app).await)
+}
+
+/// Refresh one provider only (the per-card refresh button).
+#[tauri::command]
+pub async fn refresh_provider(app: AppHandle, provider: String) -> Result<Vec<UsageSnapshot>, String> {
+    state::refresh_provider(&app, &provider).await
+}
+
+/// The panel reports its content height; the window follows it.
+#[tauri::command]
+pub async fn fit_panel(app: AppHandle, height: f64) -> Result<(), String> {
+    window::fit_panel(&app, height);
+    Ok(())
 }
 
 /// `autostart` is reported from the OS, not from the settings file: the user
@@ -74,9 +91,21 @@ pub async fn save_settings(
     }
 
     config::save(&app, &settings).map_err(|e| e.to_string())?;
-    state.set_settings(settings);
-    // Wake the scheduler so a changed interval or provider set takes effect now.
-    state.notify.notify_one();
+    let previous = state.settings();
+    state.set_settings(settings.clone());
+    let _ = app.emit(SETTINGS_UPDATED, &settings);
+
+    // Wake the scheduler only when what or how to fetch changed; display-only
+    // settings (language, used/left, alerts) shouldn't hit every API again.
+    let fetch_changed = settings.refresh_interval_secs != previous.refresh_interval_secs
+        || settings.enabled_providers != previous.enabled_providers
+        || settings.proxy_mode != previous.proxy_mode
+        || settings.proxy_url != previous.proxy_url;
+    if fetch_changed {
+        state.notify.notify_one();
+    } else {
+        tray::update_tooltip(&app, &state.cached(), &settings);
+    }
     Ok(())
 }
 

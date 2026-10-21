@@ -60,7 +60,11 @@ async fn main() {
             UsageStatus::NoQuotaApi => "INFO",
             UsageStatus::Error => "FAIL",
         };
-        println!("{marker} {:<14}", snapshot.display_name);
+        let who: Vec<&str> = [snapshot.plan.as_deref(), snapshot.account.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect();
+        println!("{marker} {:<14} {}", snapshot.display_name, who.join(" · "));
         if let Some(message) = &snapshot.message {
             println!("       {message}");
         }
@@ -69,7 +73,12 @@ async fn main() {
                 Some(limit) => format!("{:.1} / {:.1} {}", metric.used, limit, metric.unit),
                 None => format!("{:.1} {}", metric.used, metric.unit),
             };
-            println!("       {:<22} {value}", metric.label);
+            let reset = metric
+                .reset_at
+                .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+                .map(|dt| format!("  resets {}", dt.with_timezone(&chrono::Local).format("%m-%d %H:%M")))
+                .unwrap_or_default();
+            println!("       {:<22} {value}{reset}", metric.label);
         }
     }
 

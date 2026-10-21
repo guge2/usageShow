@@ -1,14 +1,36 @@
 //! Reading and writing the persisted `AppSettings`.
 
 use crate::models::AppSettings;
+use crate::quota::AlertMarks;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
+fn config_file(app: &AppHandle, name: &str) -> Option<PathBuf> {
+    app.path().app_config_dir().ok().map(|dir| dir.join(name))
+}
+
 fn settings_path(app: &AppHandle) -> Option<PathBuf> {
-    app.path()
-        .app_config_dir()
-        .ok()
-        .map(|dir| dir.join("settings.json"))
+    config_file(app, "settings.json")
+}
+
+/// Which usage alerts were already sent, so a restart doesn't repeat them.
+pub fn load_alert_marks(app: &AppHandle) -> AlertMarks {
+    config_file(app, "alert-marks.json")
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_alert_marks(app: &AppHandle, marks: &AlertMarks) -> std::io::Result<()> {
+    let Some(path) = config_file(app, "alert-marks.json") else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let body = serde_json::to_string(marks)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(path, body)
 }
 
 /// Load settings, falling back to defaults for a missing or corrupt file.

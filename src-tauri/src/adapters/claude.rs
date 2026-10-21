@@ -1,6 +1,6 @@
 use super::creds;
 use super::FetchCtx;
-use crate::models::{UsageMetric, UsageSnapshot};
+use crate::models::{title_case, UsageMetric, UsageSnapshot};
 use serde::Deserialize;
 use tokio::sync::OnceCell;
 
@@ -24,6 +24,10 @@ struct OauthBlock {
     /// Unix milliseconds.
     #[serde(rename = "expiresAt")]
     expires_at: Option<i64>,
+    #[serde(rename = "subscriptionType")]
+    subscription_type: Option<String>,
+    #[serde(rename = "rateLimitTier")]
+    rate_limit_tier: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -75,16 +79,67 @@ async fn user_agent() -> &'static str {
     .as_str()
 }
 
-fn push_window(metrics: &mut Vec<UsageMetric>, label: &str, window: Option<UsageWindow>) {
+const FIVE_HOURS: i64 = 5 * 3600;
+const SEVEN_DAYS: i64 = 7 * 86400;
+
+fn push_window(
+    metrics: &mut Vec<UsageMetric>,
+    label: &str,
+    span: i64,
+    window: Option<UsageWindow>,
+) {
     if let Some(w) = window {
         if let Some(pct) = w.utilization {
-            metrics.push(UsageMetric::percent(
-                label,
-                pct,
-                creds::parse_rfc3339(&w.resets_at),
-            ));
+            metrics.push(
+                UsageMetric::percent(label, pct, creds::parse_rfc3339(&w.resets_at))
+                    .spanning(Some(span)),
+            );
         }
     }
+}
+
+/// `~/.claude.json` keeps the signed-in account's profile (email, tier).
+async fn read_profile() -> (Option<String>, Option<String>) {
+    let Some(path) = creds::home_path(&[".claude.json"]) else {
+        return (None, None);
+    };
+    let Ok(root) = creds::read_json::<serde_json::Value>(&path).await else {
+        return (None, None);
+    };
+    let account = root.get("oauthAccount");
+    let text = |key: &str| {
+        account
+            .and_then(|a| a.get(key))
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string)
+    };
+    let tier = text("userRateLimitTier").or_else(|| text("organizationRateLimitTier"));
+    (text("emailAddress"), tier)
+}
+
+/// "max" + "default_claude_max_20x" -> "Max 20x"; "pro" -> "Pro".
+fn plan_name(subscription: Option<&str>, tier: Option<&str>) -> Option<String> {
+    let multiplier = tier.and_then(|t| {
+        t.rsplit('_')
+            .next()
+            .filter(|last| {
+                last.len() > 1
+                    && last.ends_with('x')
+                    && last[..last.len() - 1].parse::<u32>().is_ok()
+            })
+            .map(ToString::to_string)
+    });
+    let base = subscription.map(title_case).or_else(|| {
+        let t = tier?.to_lowercase();
+        ["max", "pro", "team", "enterprise"]
+            .iter()
+            .find(|k| t.contains(*k))
+            .map(|k| title_case(k))
+    })?;
+    Some(match multiplier {
+        Some(m) => format!("{base} {m}"),
+        None => base,
+    })
 }
 
 pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
@@ -170,10 +225,10 @@ pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
     };
 
     let mut metrics = Vec::new();
-    push_window(&mut metrics, "5h limit", usage.five_hour);
-    push_window(&mut metrics, "7d limit", usage.seven_day);
-    push_window(&mut metrics, "7d limit (Opus)", usage.seven_day_opus);
-    push_window(&mut metrics, "7d limit (Sonnet)", usage.seven_day_sonnet);
+    push_window(&mut metrics, "5h", FIVE_HOURS, usage.five_hour);
+    push_window(&mut metrics, "7d", SEVEN_DAYS, usage.seven_day);
+    push_window(&mut metrics, "7d · Opus", SEVEN_DAYS, usage.seven_day_opus);
+    push_window(&mut metrics, "7d · Sonnet", SEVEN_DAYS, usage.seven_day_sonnet);
 
     if let Some(extra) = usage.extra_usage {
         if extra.is_enabled.unwrap_or(false) {
@@ -184,6 +239,7 @@ pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
                 percent: extra.utilization,
                 unit: "usd".to_string(),
                 reset_at: None,
+                starts_at: None,
             });
         }
     }
@@ -191,5 +247,31 @@ pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
     if metrics.is_empty() {
         return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "No active usage window");
     }
+    let (email, profile_tier) = read_profile().await;
+    let plan = plan_name(
+        oauth.subscription_type.as_deref(),
+        oauth.rate_limit_tier.as_deref().or(profile_tier.as_deref()),
+    );
     UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics)
+        .with_plan(plan)
+        .with_account(email)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plan_name;
+
+    #[test]
+    fn plan_names() {
+        assert_eq!(
+            plan_name(Some("max"), Some("default_claude_max_20x")).as_deref(),
+            Some("Max 20x")
+        );
+        assert_eq!(plan_name(Some("pro"), None).as_deref(), Some("Pro"));
+        assert_eq!(
+            plan_name(None, Some("default_claude_max_5x")).as_deref(),
+            Some("Max 5x")
+        );
+        assert_eq!(plan_name(None, None), None);
+    }
 }

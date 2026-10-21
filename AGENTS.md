@@ -48,8 +48,13 @@ has no test framework; Rust logic is covered by `cargo test --lib`.
 
 The frontend talks to the backend only through `src/api.ts`: `get_usage`,
 `refresh_usage`, `get_settings`, `save_settings`, `open_settings_window`,
-`list_providers`, `get_proxy_status`. Live data arrives via the `usage-updated`
-event, not frontend polling.
+`list_providers`, `get_proxy_status`, `refresh_provider` (one card),
+`fit_panel` (the panel reports its content height and the window follows).
+Live data arrives via the `usage-updated` event, not frontend polling; saved
+settings are pushed to every window as `settings-updated`, and `panel-shown`
+fires each time the panel opens (it refreshes if its data is older than two
+intervals). UI strings live in `src/i18n.ts` (English text is the key, zh
+table alongside); `src/hooks.ts` holds the shared settings/i18n/clock hooks.
 
 ### Backend layout (`src-tauri/src/`)
 
@@ -59,8 +64,10 @@ Each file owns exactly one concern; `lib.rs` is assembly only.
 |---|---|
 | `lib.rs` | Builds the Tauri app and wires the pieces together |
 | `models.rs` | Shared types (`UsageSnapshot`, `UsageMetric`, `AppSettings`, `ProxyMode`) |
-| `config.rs` | Loading/saving `settings.json` in the app-config dir |
-| `state.rs` | `AppState` plus `refresh()`—the single path a refresh takes |
+| `config.rs` | Loading/saving `settings.json` and `alert-marks.json` in the app-config dir |
+| `state.rs` | `AppState` plus `refresh()`/`refresh_provider()`—the only paths a refresh takes; both end in `publish()` (cache, alerts, tray tooltip, `usage-updated`) |
+| `quota.rs` | Tauri-free, unit-tested logic: `due_alerts` (once per window cycle) and `tooltip_summary` |
+| `locale.rs` | zh/en choice for backend-shown strings (tray menu, notifications, window titles) |
 | `commands.rs` | All `#[tauri::command]` functions |
 | `window.rs` | Window creation, tray-anchored placement, show/hide |
 | `tray.rs` | Tray icon, menu, global shortcut |
@@ -90,6 +97,13 @@ paths), reads/decrypts/queries its source (JSON files, Cursor's SQLite
 - `error` — credentials found but the request failed
 - `no_quota_api` — signed in and healthy, but this account tier exposes no
   usage figures (see AGY below). Deliberately *not* an error; retrying cannot help.
+
+Build percentage windows with `UsageMetric::percent(label, pct, reset_at)` plus
+`.spanning(window_secs)` or `.starting(start)`, so the UI can compute pace and a
+run-out estimate. Label windows by their real length (`models::window_label`,
+e.g. "5h"/"7d"/"30d"), not by the vendor's slot name—Codex's "primary" window
+is the weekly one on some plans. Attach `.with_plan()`/`.with_account()` when
+the source exposes them.
 
 Adapters must use `ctx.client` (never build their own) so the proxy setting
 applies uniformly, and should report network failures through
@@ -122,6 +136,14 @@ The popup does not trigger a refresh on mount—the scheduler's first cycle is
 already running at launch—so the frontend reads the cache and waits for the
 `usage-updated` push.
 
+Full refreshes are serialised through `refresh_gate`; one requested within 5 s
+of the last returns the cache instead of hitting every API again. After each
+refresh, `publish()` sends a desktop notification for any window that crossed
+`alert_threshold` (once per window cycle; marks persist in `alert-marks.json`)
+and rewrites the tray tooltip summary. `save_settings` wakes the scheduler only
+when the interval, providers or proxy changed—display-only settings (language,
+used/left, alerts) do not trigger a fetch.
+
 `get_settings` reports `autostart` from the OS (`autolaunch().is_enabled()`),
 not the stored flag, since the user can change it outside the app.
 
@@ -147,6 +169,14 @@ plan name. The only credential AGY leaves on disk is
 `~/.gemini/oauth_creds.json` (issued to the Gemini CLI OAuth client); the
 running CLI refreshes its token in memory, so the disk copy is usually stale and
 must be refreshed via its `refresh_token`.
+
+**Factory** reads `GET /api/billing/limits` (what `droid /status` shows): rolling
+5h / 7d / 30d windows for the standard pool, plus a Droid Core pool shown only
+when used, and extra-usage balance. The older
+`/api/organization/subscription/usage` still answers for those accounts but with
+a token allowance that no longer governs them (it read 271% used for an account
+at 21% of its 5-hour window); it is only a fallback for accounts with
+`usesTokenRateLimitsBilling: false`.
 
 **Grok**'s billing response is gRPC-web framed protobuf, scanned shallowly by
 field path. `parse_billing_response` takes `now` as a parameter rather than

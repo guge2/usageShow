@@ -1,6 +1,6 @@
 use super::creds;
 use super::FetchCtx;
-use crate::models::{UsageMetric, UsageSnapshot};
+use crate::models::{title_case, UsageMetric, UsageSnapshot};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -20,17 +20,31 @@ fn db_path() -> Option<PathBuf> {
     )
 }
 
-fn read_access_token(path: &PathBuf) -> Result<Option<String>, rusqlite::Error> {
+struct LocalAuth {
+    token: Option<String>,
+    email: Option<String>,
+    membership: Option<String>,
+}
+
+/// The access token plus the cached account email and plan, all kept by
+/// Cursor in the same table.
+fn read_local_auth(path: &PathBuf) -> Result<LocalAuth, rusqlite::Error> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let mut stmt =
-        conn.prepare("SELECT value FROM ItemTable WHERE key = 'cursorAuth/accessToken'")?;
-    let mut rows = stmt.query([])?;
-    if let Some(row) = rows.next()? {
-        let value: String = row.get(0)?;
-        let trimmed = value.trim().trim_matches('"').to_string();
-        return Ok(Some(trimmed));
-    }
-    Ok(None)
+    let mut stmt = conn.prepare("SELECT value FROM ItemTable WHERE key = ?1")?;
+    let mut read = |key: &str| -> Result<Option<String>, rusqlite::Error> {
+        let mut rows = stmt.query([key])?;
+        if let Some(row) = rows.next()? {
+            let value: String = row.get(0)?;
+            let trimmed = value.trim().trim_matches('"').to_string();
+            return Ok(Some(trimmed).filter(|v| !v.is_empty()));
+        }
+        Ok(None)
+    };
+    Ok(LocalAuth {
+        token: read("cursorAuth/accessToken")?,
+        email: read("cursorAuth/cachedEmail")?,
+        membership: read("cursorAuth/stripeMembershipType")?,
+    })
 }
 
 /// Connect-protocol JSON encodes int64 as a string, so accept a numeric
@@ -74,14 +88,12 @@ async fn fetch_dashboard_usage(
     let Some(percent) = usage.get("totalPercentUsed").and_then(Value::as_f64) else {
         return Ok(None);
     };
-    Ok(Some(vec![UsageMetric {
-        label: "Monthly included usage".to_string(),
-        used: percent,
-        limit: Some(100.0),
-        percent: Some(percent),
-        unit: "percent".to_string(),
-        reset_at: parse_timestamp(root.get("billingCycleEnd")),
-    }]))
+    Ok(Some(vec![UsageMetric::percent(
+        "Monthly",
+        percent,
+        parse_timestamp(root.get("billingCycleEnd")),
+    )
+    .starting(parse_timestamp(root.get("billingCycleStart")))]))
 }
 
 async fn fetch_legacy_usage(client: &reqwest::Client, token: &str) -> UsageSnapshot {
@@ -158,12 +170,13 @@ async fn fetch_legacy_usage(client: &reqwest::Client, token: &str) -> UsageSnaps
 
     let percent = (used_total / limit_total) * 100.0;
     let metrics = vec![UsageMetric {
-        label: "Monthly request quota".to_string(),
+        label: "Monthly requests".to_string(),
         used: used_total,
         limit: Some(limit_total),
         percent: Some(percent),
         unit: "requests".to_string(),
         reset_at: None,
+        starts_at: None,
     }];
 
     UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics)
@@ -186,13 +199,8 @@ pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
     }
 
     let path_clone = path.clone();
-    let token_result = tokio::task::spawn_blocking(move || read_access_token(&path_clone)).await;
-
-    let token = match token_result {
-        Ok(Ok(Some(t))) => t,
-        Ok(Ok(None)) => {
-            return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Not logged in to Cursor")
-        }
+    let auth = match tokio::task::spawn_blocking(move || read_local_auth(&path_clone)).await {
+        Ok(Ok(auth)) => auth,
         Ok(Err(e)) => {
             return UsageSnapshot::error(
                 PROVIDER,
@@ -204,13 +212,17 @@ pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
             return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, format!("Internal error: {e}"))
         }
     };
+    let Some(token) = auth.token.clone() else {
+        return UsageSnapshot::not_connected(PROVIDER, DISPLAY_NAME, "Not logged in to Cursor");
+    };
 
     let client = &ctx.client;
-    match fetch_dashboard_usage(client, &token).await {
-        Ok(Some(metrics)) => return UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics),
-        Ok(None) => {}
-        Err(e) => return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, e),
-    }
-
-    fetch_legacy_usage(client, &token).await
+    let snapshot = match fetch_dashboard_usage(client, &token).await {
+        Ok(Some(metrics)) => UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics),
+        Ok(None) => fetch_legacy_usage(client, &token).await,
+        Err(e) => UsageSnapshot::error(PROVIDER, DISPLAY_NAME, e),
+    };
+    snapshot
+        .with_plan(auth.membership.as_deref().map(title_case))
+        .with_account(auth.email)
 }

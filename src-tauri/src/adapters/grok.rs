@@ -314,9 +314,9 @@ fn cycle_label(period_start: Option<i64>, reset_at: Option<i64>, now: i64) -> St
         _ => return "Credits".to_string(),
     };
     if (5.0..=9.0).contains(&days) {
-        "Weekly limit".to_string()
+        "Weekly".to_string()
     } else if (25.0..=35.0).contains(&days) {
-        "Monthly limit".to_string()
+        "Monthly".to_string()
     } else {
         "Credits".to_string()
     }
@@ -404,14 +404,12 @@ pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
     };
 
     let percent = billing.used_percent.clamp(0.0, 100.0);
-    let metrics = vec![UsageMetric {
-        label: cycle_label(billing.period_start, billing.reset_at, now),
-        used: percent,
-        limit: Some(100.0),
-        percent: Some(percent),
-        unit: "percent".to_string(),
-        reset_at: billing.reset_at,
-    }];
+    let metrics = vec![UsageMetric::percent(
+        cycle_label(billing.period_start, billing.reset_at, now),
+        percent,
+        billing.reset_at,
+    )
+    .starting(billing.period_start)];
 
     UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics)
 }
@@ -443,7 +441,7 @@ mod tests {
         assert_eq!(billing.reset_at, Some(1_784_079_387));
         assert_eq!(
             cycle_label(billing.period_start, billing.reset_at, captured_at),
-            "Weekly limit"
+            "Weekly"
         );
     }
 }

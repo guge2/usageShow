@@ -26,6 +26,13 @@ pub struct AppSettings {
     pub autostart: bool,
     pub proxy_mode: ProxyMode,
     pub proxy_url: String,
+    /// Show how much of each window is left instead of how much is used.
+    pub show_remaining: bool,
+    /// Notify once a window's usage reaches this percentage, once per window
+    /// cycle. 0 disables alerts.
+    pub alert_threshold: u8,
+    /// UI language: "auto" (follow the system), "en" or "zh".
+    pub language: String,
 }
 
 impl Default for AppSettings {
@@ -36,6 +43,9 @@ impl Default for AppSettings {
             autostart: false,
             proxy_mode: ProxyMode::Auto,
             proxy_url: String::new(),
+            show_remaining: false,
+            alert_threshold: 90,
+            language: "auto".to_string(),
         }
     }
 }
@@ -60,7 +70,7 @@ pub struct ProxyStatus {
 /// "weekly", "monthly credits"). A provider can report more than one metric.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct UsageMetric {
-    /// Short human label, e.g. "5h limit" / "Weekly limit" / "Amp Free"
+    /// Short human label, e.g. "5h" / "7d" / "7d · Opus" / "Amp Free"
     pub label: String,
     /// Amount already used, in `unit`.
     pub used: f64,
@@ -68,10 +78,13 @@ pub struct UsageMetric {
     pub limit: Option<f64>,
     /// Percentage already used (0-100), when known directly from the provider.
     pub percent: Option<f64>,
-    /// Unit of `used`/`limit`: "percent" | "usd" | "requests" | "tokens"
+    /// Unit of `used`/`limit`: "percent" | "usd" | "requests" | "tokens" | "credits"
     pub unit: String,
     /// Unix seconds when this window resets, if known.
     pub reset_at: Option<i64>,
+    /// Unix seconds when the current window started, if known. Together with
+    /// `reset_at` it lets the UI compare usage against an even pace.
+    pub starts_at: Option<i64>,
 }
 
 impl UsageMetric {
@@ -84,8 +97,71 @@ impl UsageMetric {
             percent: Some(used),
             unit: "percent".to_string(),
             reset_at,
+            starts_at: None,
         }
     }
+
+    /// An amount with no cap (a balance, credits left).
+    pub fn amount(label: impl Into<String>, value: f64, unit: &str) -> Self {
+        Self {
+            label: label.into(),
+            used: value,
+            limit: None,
+            percent: None,
+            unit: unit.to_string(),
+            reset_at: None,
+            starts_at: None,
+        }
+    }
+
+    /// Set the window start explicitly.
+    pub fn starting(mut self, starts_at: Option<i64>) -> Self {
+        self.starts_at = starts_at;
+        self
+    }
+
+    /// Derive the window start from its reset time and fixed length.
+    pub fn spanning(mut self, window_secs: Option<i64>) -> Self {
+        if let (Some(reset), Some(span)) = (self.reset_at, window_secs) {
+            if span > 0 {
+                self.starts_at = Some(reset - span);
+            }
+        }
+        self
+    }
+}
+
+/// "5h" for 18000 seconds, "7d" for 604800, "30d" for a month-long window.
+pub fn window_label(secs: i64) -> String {
+    const HOUR: i64 = 3600;
+    const DAY: i64 = 86400;
+    if secs <= 0 {
+        return "Limit".to_string();
+    }
+    if secs % DAY == 0 {
+        format!("{}d", secs / DAY)
+    } else if secs % HOUR == 0 {
+        format!("{}h", secs / HOUR)
+    } else if secs >= DAY {
+        format!("{}d", (secs as f64 / DAY as f64).round() as i64)
+    } else {
+        format!("{}h", ((secs as f64 / HOUR as f64).round() as i64).max(1))
+    }
+}
+
+/// "max" -> "Max", "pro_plus" -> "Pro Plus".
+pub fn title_case(raw: &str) -> String {
+    raw.split(|c: char| c == '_' || c == '-' || c == ' ')
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -121,6 +197,10 @@ pub struct UsageSnapshot {
     /// because this one failed. Lets the panel keep showing real numbers
     /// through a transient hiccup instead of blanking out.
     pub stale: bool,
+    /// Subscription plan, e.g. "Max 5x" / "Plus" / "Pro".
+    pub plan: Option<String>,
+    /// Signed-in account, usually an email address.
+    pub account: Option<String>,
 }
 
 impl UsageSnapshot {
@@ -139,7 +219,21 @@ impl UsageSnapshot {
             metrics,
             updated_at: now_unix(),
             stale: false,
+            plan: None,
+            account: None,
         }
+    }
+
+    pub fn with_plan(mut self, plan: Option<String>) -> Self {
+        self.plan = plan.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+        self
+    }
+
+    pub fn with_account(mut self, account: Option<String>) -> Self {
+        self.account = account
+            .map(|a| a.trim().to_string())
+            .filter(|a| !a.is_empty());
+        self
     }
 
     pub fn not_connected(provider: &str, display_name: &str, message: impl Into<String>) -> Self {
@@ -211,6 +305,8 @@ impl UsageSnapshot {
             metrics: previous.metrics.clone(),
             updated_at: previous.updated_at,
             stale: true,
+            plan: self.plan.or_else(|| previous.plan.clone()),
+            account: self.account.or_else(|| previous.account.clone()),
             ..self
         }
     }
@@ -326,5 +422,35 @@ mod tests {
         assert_eq!(settings.refresh_interval_secs, defaults.refresh_interval_secs);
         assert_eq!(settings.enabled_providers, defaults.enabled_providers);
         assert_eq!(settings.proxy_mode, ProxyMode::Auto);
+        assert_eq!(settings.alert_threshold, 90);
+        assert_eq!(settings.language, "auto");
+        assert!(!settings.show_remaining);
+    }
+
+    #[test]
+    fn stale_fallback_keeps_plan_and_account() {
+        let previous = ok_snapshot(60)
+            .with_plan(Some("Max 5x".into()))
+            .with_account(Some("me@example.com".into()));
+        let failed = UsageSnapshot::error("claude", "Claude", "Rate limited, try again later");
+        let merged = failed.or_previous(Some(&previous));
+        assert_eq!(merged.plan.as_deref(), Some("Max 5x"));
+        assert_eq!(merged.account.as_deref(), Some("me@example.com"));
+    }
+
+    #[test]
+    fn window_labels() {
+        assert_eq!(window_label(5 * 3600), "5h");
+        assert_eq!(window_label(7 * 86400), "7d");
+        assert_eq!(window_label(30 * 86400), "30d");
+        assert_eq!(title_case("pro_plus"), "Pro Plus");
+    }
+
+    #[test]
+    fn spanning_derives_the_window_start() {
+        let m = UsageMetric::percent("5h", 10.0, Some(100_000)).spanning(Some(18_000));
+        assert_eq!(m.starts_at, Some(82_000));
+        let none = UsageMetric::percent("5h", 10.0, None).spanning(Some(18_000));
+        assert_eq!(none.starts_at, None);
     }
 }

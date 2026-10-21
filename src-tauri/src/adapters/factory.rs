@@ -1,4 +1,5 @@
 use super::FetchCtx;
+use super::creds;
 use crate::models::{UsageMetric, UsageSnapshot};
 use aes_gcm::aead::consts::U16;
 use aes_gcm::aead::generic_array::GenericArray;
@@ -164,22 +165,174 @@ async fn refresh_access_token(client: &reqwest::Client, refresh_token: &str) -> 
         .map(|r| r.access_token)
 }
 
-fn push_bucket(metrics: &mut Vec<UsageMetric>, label: &str, bucket: &Value, reset_at: Option<i64>) {
-    let used = bucket.get("orgTotalTokensUsed").and_then(|v| v.as_f64());
-    let limit = bucket.get("totalAllowance").and_then(|v| v.as_f64());
-    let ratio = bucket.get("usedRatio").and_then(|v| v.as_f64());
+const API_BASE: &str = "https://api.factory.ai";
+const RELOGIN: &str = "Login expired - please sign in to Droid CLI again";
+
+/// Rolling windows reported by `GET /api/billing/limits` (what `droid
+/// /status` shows): key in the response, label, and nominal length.
+const LIMIT_WINDOWS: &[(&str, &str, i64)] = &[
+    ("fiveHour", "5h", 5 * 3600),
+    ("weekly", "7d", 7 * 86400),
+    ("monthly", "30d", 30 * 86400),
+];
+
+/// A window's end: an ISO time, or epoch seconds/milliseconds.
+fn parse_window_end(value: Option<&Value>) -> Option<i64> {
+    let value = value?;
+    if let Some(s) = value.as_str() {
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+            return Some(dt.timestamp());
+        }
+        return s
+            .parse::<i64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .map(creds::normalize_epoch);
+    }
+    creds::parse_epoch(Some(value)).filter(|n| *n > 0)
+}
+
+/// One pool's windows (standard, or Droid Core). A pool that is entirely
+/// idle (nothing used, no window running) is skipped when `skip_idle`.
+fn push_pool(
+    metrics: &mut Vec<UsageMetric>,
+    pool: Option<&Value>,
+    prefix: &str,
+    skip_idle: bool,
+    now: i64,
+) {
+    let Some(pool) = pool else {
+        return;
+    };
+    let mut windows = Vec::new();
+    for (key, label, span) in LIMIT_WINDOWS {
+        let Some(w) = pool.get(*key).filter(|w| w.is_object()) else {
+            continue;
+        };
+        let used = w.get("usedPercent").and_then(Value::as_f64).unwrap_or(0.0);
+        let reset_at = parse_window_end(w.get("windowEnd")).or_else(|| {
+            w.get("secondsRemaining")
+                .and_then(Value::as_f64)
+                .map(|secs| now + secs as i64)
+        });
+        windows.push(
+            UsageMetric::percent(
+                format!("{prefix}{label}"),
+                used.clamp(0.0, 100.0),
+                reset_at,
+            )
+            .spanning(Some(*span)),
+        );
+    }
+    let idle = windows
+        .iter()
+        .all(|m| m.used <= 0.0 && m.reset_at.is_none());
+    if skip_idle && idle {
+        return;
+    }
+    metrics.extend(windows);
+}
+
+/// Parse `/api/billing/limits`. `None` when the account isn't on rate-limit
+/// billing (then the legacy token allowance applies).
+fn parse_limits(root: &Value, now: i64) -> Option<Vec<UsageMetric>> {
+    if root.get("usesTokenRateLimitsBilling").and_then(Value::as_bool) == Some(false) {
+        return None;
+    }
+    let limits = root.get("limits")?;
+    let mut metrics = Vec::new();
+    push_pool(&mut metrics, limits.get("standard"), "", false, now);
+    push_pool(&mut metrics, limits.get("core"), "Core · ", true, now);
+    if metrics.is_empty() {
+        return None;
+    }
+    let extra_allowed = root
+        .get("extraUsageAllowed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let extra_cents = root
+        .get("extraUsageBalanceCents")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    if extra_allowed && extra_cents > 0.0 {
+        metrics.push(UsageMetric::amount("Extra usage", extra_cents / 100.0, "usd"));
+    }
+    Some(metrics)
+}
+
+/// Legacy token-allowance billing (`/api/organization/subscription/usage`).
+/// `usedRatio` exceeds 1 once overage kicks in, so the used amount is shown
+/// as-is and the percentage is capped for the gauge.
+fn push_bucket(
+    metrics: &mut Vec<UsageMetric>,
+    label: &str,
+    bucket: &Value,
+    starts_at: Option<i64>,
+    reset_at: Option<i64>,
+) {
+    let used = bucket.get("orgTotalTokensUsed").and_then(Value::as_f64);
+    let limit = bucket.get("totalAllowance").and_then(Value::as_f64);
     if let (Some(used), Some(limit)) = (used, limit) {
         if limit > 0.0 {
+            let ratio = bucket
+                .get("usedRatio")
+                .and_then(Value::as_f64)
+                .unwrap_or(used / limit);
             metrics.push(UsageMetric {
                 label: label.to_string(),
                 used,
                 limit: Some(limit),
-                percent: Some(ratio.unwrap_or(used / limit) * 100.0),
+                percent: Some((ratio * 100.0).clamp(0.0, 100.0)),
                 unit: "tokens".to_string(),
                 reset_at,
+                starts_at,
             });
         }
     }
+}
+
+fn parse_legacy_usage(root: &Value) -> Vec<UsageMetric> {
+    let usage = root.get("usage");
+    let reset_at = creds::parse_epoch(usage.and_then(|u| u.get("endDate")));
+    let starts_at = creds::parse_epoch(usage.and_then(|u| u.get("startDate")));
+
+    let mut metrics = Vec::new();
+    if let Some(standard) = usage.and_then(|u| u.get("standard")) {
+        push_bucket(&mut metrics, "Standard", standard, starts_at, reset_at);
+    }
+    if let Some(premium) = usage.and_then(|u| u.get("premium")) {
+        push_bucket(&mut metrics, "Premium", premium, starts_at, reset_at);
+    }
+    metrics
+}
+
+enum ApiError {
+    Unauthorized,
+    Other(String),
+}
+
+async fn get_json(
+    client: &reqwest::Client,
+    path: &str,
+    token: &str,
+    org_id: &str,
+) -> Result<Value, ApiError> {
+    let resp = client
+        .get(format!("{API_BASE}{path}"))
+        .bearer_auth(token)
+        .header("X-Factory-Org-Id", org_id)
+        .send()
+        .await
+        .map_err(|e| ApiError::Other(super::describe_error(&e)))?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(ApiError::Unauthorized);
+    }
+    if !resp.status().is_success() {
+        return Err(ApiError::Other(format!("API returned {}", resp.status())));
+    }
+    resp.json::<Value>()
+        .await
+        .map_err(|_| ApiError::Other("Failed to parse response".to_string()))
 }
 
 pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
@@ -214,61 +367,117 @@ pub async fn fetch(ctx: FetchCtx) -> UsageSnapshot {
         .clone()
         .or_else(|| jwt_org_id(&creds.access_token))
         .unwrap_or_default();
-    let resp = ctx
-        .client
-        .get("https://api.factory.ai/api/organization/subscription/usage?useCache=true")
-        .header("Authorization", format!("Bearer {access_token}"))
-        .header("X-Factory-Org-Id", &org_id)
-        .send()
-        .await;
+    let email = jwt_claims(&access_token)
+        .or_else(|| jwt_claims(&creds.access_token))
+        .and_then(|c| {
+            c.get("email")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string)
+        });
 
-    let resp = match resp {
-        Ok(r) => r,
-        Err(e) => {
-            return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, super::describe_error(&e))
+    // Current billing: rolling 5h / 7d / 30d windows, as `droid /status` shows.
+    // The legacy endpoint below still answers for these accounts, but with a
+    // token allowance that no longer governs them (it read 271% used for an
+    // account that had used 21% of its 5-hour window).
+    let limits_error =
+        match get_json(&ctx.client, "/api/billing/limits", &access_token, &org_id).await {
+            Ok(root) => match parse_limits(&root, now) {
+                Some(metrics) => {
+                    return UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics).with_account(email)
+                }
+                None => None,
+            },
+            Err(ApiError::Unauthorized) => {
+                return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, RELOGIN)
+            }
+            Err(ApiError::Other(e)) => Some(e),
+        };
+
+    // Legacy token-allowance billing.
+    match get_json(
+        &ctx.client,
+        "/api/organization/subscription/usage?useCache=true",
+        &access_token,
+        &org_id,
+    )
+    .await
+    {
+        Ok(root) => {
+            let metrics = parse_legacy_usage(&root);
+            if metrics.is_empty() {
+                let msg = limits_error.unwrap_or_else(|| "No usage data available".to_string());
+                return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, msg);
+            }
+            UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics).with_account(email)
         }
-    };
-    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return UsageSnapshot::error(
-            PROVIDER,
-            DISPLAY_NAME,
-            "Login expired - please sign in to Droid CLI again",
-        );
-    }
-    if !resp.status().is_success() {
-        return UsageSnapshot::error(
-            PROVIDER,
-            DISPLAY_NAME,
-            format!("API returned {}", resp.status()),
-        );
-    }
-
-    let body: Result<Value, _> = resp.json().await;
-    let Ok(root) = body else {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "Failed to parse response");
-    };
-
-    let usage = root.get("usage");
-    let reset_at = super::creds::parse_epoch(usage.and_then(|u| u.get("endDate")));
-
-    let mut metrics = Vec::new();
-    if let Some(standard) = usage.and_then(|u| u.get("standard")) {
-        push_bucket(&mut metrics, "Standard Usage (30d)", standard, reset_at);
-    }
-    if let Some(premium) = usage.and_then(|u| u.get("premium")) {
-        let has_allowance = premium
-            .get("totalAllowance")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0)
-            > 0.0;
-        if has_allowance {
-            push_bucket(&mut metrics, "Premium Usage (30d)", premium, reset_at);
+        Err(ApiError::Unauthorized) => UsageSnapshot::error(PROVIDER, DISPLAY_NAME, RELOGIN),
+        Err(ApiError::Other(e)) => {
+            UsageSnapshot::error(PROVIDER, DISPLAY_NAME, limits_error.unwrap_or(e))
         }
     }
+}
 
-    if metrics.is_empty() {
-        return UsageSnapshot::error(PROVIDER, DISPLAY_NAME, "No usage data available");
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Captured /api/billing/limits response (account on rate-limit billing).
+    const LIMITS: &str = r#"{"usesTokenRateLimitsBilling":true,"limits":{"standard":{"fiveHour":{"usedPercent":21,"windowEnd":"2026-10-21T18:22:04.067Z","secondsRemaining":14832},"weekly":{"usedPercent":35,"windowEnd":"2026-10-22T09:55:24.441Z","secondsRemaining":70833},"monthly":{"usedPercent":24,"windowEnd":"2026-10-23T07:13:03.130Z","secondsRemaining":147491}},"core":{"fiveHour":{"usedPercent":0,"windowEnd":null,"secondsRemaining":null},"weekly":{"usedPercent":0,"windowEnd":null,"secondsRemaining":null},"monthly":{"usedPercent":0,"windowEnd":null,"secondsRemaining":null}}},"overagePreference":"extraUsage","canManageOverage":true,"extraUsageBalanceCents":0,"extraUsageAllowed":true}"#;
+
+    /// Captured legacy usage response for the same account: 271% of a token
+    /// allowance that no longer governs it.
+    const LEGACY: &str = r#"{"usage":{"startDate":1783977208000,"endDate":1801728000000,"standard":{"userTokens":74499656,"orgTotalTokensUsed":54260954,"orgOverageUsed":34260954,"basicAllowance":20000000,"totalAllowance":20000000,"orgOverageLimit":0,"usedRatio":2.7130477},"premium":{"orgTotalTokensUsed":0,"totalAllowance":0,"usedRatio":0}}}"#;
+
+    #[test]
+    fn parses_rate_limit_windows() {
+        let root: Value = serde_json::from_str(LIMITS).unwrap();
+        let m = parse_limits(&root, 1_792_600_000).expect("windows");
+        let labels: Vec<&str> = m.iter().map(|x| x.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["5h", "7d", "30d"],
+            "idle Core pool and zero extra usage are hidden"
+        );
+        assert_eq!(m[0].percent, Some(21.0));
+        let reset = chrono::DateTime::parse_from_rfc3339("2026-10-21T18:22:04.067Z")
+            .unwrap()
+            .timestamp();
+        assert_eq!(m[0].reset_at, Some(reset));
+        assert_eq!(m[0].starts_at, Some(reset - 5 * 3600));
+        assert_eq!(m[1].percent, Some(35.0));
+        assert_eq!(m[2].percent, Some(24.0));
     }
 
-    UsageSnapshot::ok(PROVIDER, DISPLAY_NAME, metrics)
+    #[test]
+    fn active_core_pool_and_extra_usage_are_shown() {
+        let mut root: Value = serde_json::from_str(LIMITS).unwrap();
+        root["limits"]["core"]["fiveHour"]["usedPercent"] = serde_json::json!(5);
+        root["extraUsageBalanceCents"] = serde_json::json!(1234);
+        let m = parse_limits(&root, 0).unwrap();
+        let labels: Vec<&str> = m.iter().map(|x| x.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["5h", "7d", "30d", "Core · 5h", "Core · 7d", "Core · 30d", "Extra usage"]
+        );
+        assert!((m[6].used - 12.34).abs() < 1e-9);
+    }
+
+    #[test]
+    fn legacy_billing_falls_back_and_caps_overage() {
+        let limits = serde_json::json!({ "usesTokenRateLimitsBilling": false, "limits": {} });
+        assert!(parse_limits(&limits, 0).is_none());
+        let m = parse_legacy_usage(&serde_json::from_str(LEGACY).unwrap());
+        assert_eq!(m.len(), 1, "premium without allowance is skipped");
+        assert_eq!(m[0].percent, Some(100.0));
+        assert!((m[0].used - 54_260_954.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn window_end_formats() {
+        let ms = serde_json::json!(1_700_000_000_000i64);
+        assert_eq!(parse_window_end(Some(&ms)), Some(1_700_000_000));
+        let s = serde_json::json!("1700000000000");
+        assert_eq!(parse_window_end(Some(&s)), Some(1_700_000_000));
+        assert_eq!(parse_window_end(Some(&Value::Null)), None);
+    }
 }

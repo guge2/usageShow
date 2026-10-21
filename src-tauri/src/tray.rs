@@ -1,30 +1,44 @@
-//! System tray icon, its menu, and the global toggle shortcut.
+//! System tray icon, its menu, its tooltip, and the global toggle shortcut.
 
-use crate::state;
+use crate::locale::{self, tr};
+use crate::models::{AppSettings, UsageSnapshot};
+use crate::quota;
+use crate::state::{self, AppState};
 use crate::window;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    App, AppHandle,
+    App, AppHandle, Manager,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 pub const TOGGLE_SHORTCUT: &str = "alt+c";
+const TRAY_ID: &str = "main-tray";
+
+fn title(settings: &AppSettings) -> &'static str {
+    tr(locale::use_chinese(settings), "AI Usage Monitor", "AI 用量监控")
+}
 
 pub fn setup(app: &App) -> tauri::Result<()> {
-    let show = MenuItemBuilder::with_id("show", "Open Panel")
+    let settings = app
+        .try_state::<AppState>()
+        .map(|s| s.settings())
+        .unwrap_or_default();
+    let zh = locale::use_chinese(&settings);
+
+    let show = MenuItemBuilder::with_id("show", tr(zh, "Open Panel", "打开面板"))
         .accelerator(TOGGLE_SHORTCUT)
         .build(app)?;
-    let settings = MenuItemBuilder::with_id("settings", "Settings").build(app)?;
-    let refresh = MenuItemBuilder::with_id("refresh", "Refresh Now").build(app)?;
-    let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+    let settings_item = MenuItemBuilder::with_id("settings", tr(zh, "Settings", "设置")).build(app)?;
+    let refresh = MenuItemBuilder::with_id("refresh", tr(zh, "Refresh Now", "立即刷新")).build(app)?;
+    let quit = MenuItemBuilder::with_id("quit", tr(zh, "Quit", "退出")).build(app)?;
     let menu = MenuBuilder::new(app)
-        .items(&[&show, &settings, &refresh, &quit])
+        .items(&[&show, &settings_item, &refresh, &quit])
         .build()?;
 
-    TrayIconBuilder::new()
+    TrayIconBuilder::with_id(TRAY_ID)
         .icon(app.default_window_icon().unwrap().clone())
-        .tooltip("AI Usage Monitor")
+        .tooltip(title(&settings))
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(on_menu_event)
@@ -42,6 +56,14 @@ pub fn setup(app: &App) -> tauri::Result<()> {
 
     register_shortcut(app.handle())?;
     Ok(())
+}
+
+/// Hovering the tray icon shows a one-line-per-provider usage summary.
+pub fn update_tooltip(app: &AppHandle, snapshots: &[UsageSnapshot], settings: &AppSettings) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let text = quota::tooltip_summary(title(settings), snapshots, settings.show_remaining);
+        let _ = tray.set_tooltip(Some(text));
+    }
 }
 
 fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {

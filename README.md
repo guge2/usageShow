@@ -23,7 +23,14 @@ Windows 系统托盘小工具，实时展示本机已安装的 AI 编程工具�
 
 ## 功能
 
-- 托盘弹窗展示各工具当前用量、限额百分比、重置倒计时
+- 托盘弹窗以圆环展示各工具每个额度窗口（5 小时 / 7 天 / 30 天等）的用量，绿 / 琥珀 / 红三色表示剩余情况；点击圆环或标题栏「已用/剩余」切换显示
+- 显示套餐与登录账号（如 `Max 5x` · `you@example.com`），以及每张卡片的更新时间
+- 绝对重置时间（「明天 09:00 重置」）；**配速**（与匀速使用相比多用/少用了多少）以及按当前速度预估的用完时间
+- 遇到限流、断网等临时故障时保留上次读数并标注「截至 HH:MM」
+- 每张卡片可单独刷新（悬停显示刷新按钮）
+- 用量提醒：任一窗口达到设定比例（默认 90%）时发送系统通知，每个窗口每个周期只提醒一次
+- 托盘图标悬停提示显示用量摘要；面板高度随内容自适应；未连接的工具折叠为一行
+- 中文 / English 界面（默认跟随系统），自动适配深色模式
 - 设置窗口可选择要监控哪些工具、刷新间隔、是否开机自启
 - 网络代理：默认自动读取 `HTTPS_PROXY`/`HTTP_PROXY` 与 Windows 系统代理，也可手动指定 HTTP 或 SOCKS5 代理
 - 可在设置窗口检查新版本、查看下载进度并自动安装重启
@@ -77,7 +84,7 @@ npx tauri build
 | Codex CLI | `~/.codex/auth.json` + ChatGPT usage API |
 | Cursor | 本地 SQLite（`globalStorage/state.vscdb`）+ Cursor dashboard usage API |
 | Amp | `amp` CLI 输出解析 |
-| Factory Droid | `~/.factory/auth.v2.*` 或 `~/.factory/auth.encrypted` |
+| Factory Droid | `~/.factory/auth.encrypted` 或 `~/.factory/auth.v2.*` + `/api/billing/limits`（5h / 7d / 30d 滚动窗口，与 `droid /status` 一致） |
 | AGY | `%LOCALAPPDATA%/agy/bin/agy.exe` + `~/.gemini/oauth_creds.json` + Google Code Assist quota API |
 | Grok | `~/.grok/auth.json`（OIDC）+ grok.com billing gRPC-web |
 

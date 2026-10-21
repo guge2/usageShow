@@ -2,15 +2,30 @@
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 pub const MAIN_WINDOW: &str = "main";
 pub const SETTINGS_WINDOW: &str = "settings";
 
+/// Sent each time the panel opens, so it can refresh data that went stale
+/// while it was hidden (e.g. across a sleep).
+pub const PANEL_SHOWN: &str = "panel-shown";
+
 const WINDOW_WIDTH: f64 = 360.0;
 const WINDOW_HEIGHT: f64 = 480.0;
+const PANEL_MIN_HEIGHT: f64 = 140.0;
+const PANEL_MAX_HEIGHT: f64 = 640.0;
 const SETTINGS_WIDTH: f64 = 380.0;
-const SETTINGS_HEIGHT: f64 = 680.0;
+const SETTINGS_HEIGHT: f64 = 720.0;
+
+/// The panel's current height: it follows its content (`fit_panel`).
+static PANEL_HEIGHT: Mutex<f64> = Mutex::new(WINDOW_HEIGHT);
+
+fn panel_height() -> f64 {
+    *PANEL_HEIGHT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// A toggle arriving this soon after the panel hid itself on blur is the same
 /// click that caused the blur (see `toggle`).
@@ -38,15 +53,41 @@ fn position_near_tray(window: &WebviewWindow) {
 
     const MARGIN: f64 = 12.0;
     let x = origin.x + size.width - WINDOW_WIDTH - MARGIN;
-    let y = origin.y + size.height - WINDOW_HEIGHT - MARGIN;
+    let y = origin.y + size.height - panel_height() - MARGIN;
 
     let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+}
+
+/// Resize the panel to fit its content (as measured by the page), keeping it
+/// anchored above the tray, so two tools don't sit in a mostly empty panel
+/// and many tools get more room.
+pub fn fit_panel(app: &AppHandle, height: f64) {
+    let height = height.clamp(PANEL_MIN_HEIGHT, PANEL_MAX_HEIGHT).round();
+    {
+        let mut current = PANEL_HEIGHT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if (*current - height).abs() < 1.0 {
+            return;
+        }
+        *current = height;
+    }
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+            width: WINDOW_WIDTH,
+            height,
+        }));
+        if window.is_visible().unwrap_or(false) {
+            position_near_tray(&window);
+        }
+    }
 }
 
 fn show(window: &WebviewWindow) {
     position_near_tray(window);
     let _ = window.show();
     let _ = window.set_focus();
+    let _ = window.emit(PANEL_SHOWN, ());
 }
 
 pub fn toggle(window: &WebviewWindow) {
@@ -86,12 +127,16 @@ pub fn open_settings(app: &AppHandle) -> Result<(), String> {
         let _ = existing.set_focus();
         return Ok(());
     }
+    let zh = app
+        .try_state::<crate::state::AppState>()
+        .map(|s| crate::locale::use_chinese(&s.settings()))
+        .unwrap_or(false);
     WebviewWindowBuilder::new(
         app,
         SETTINGS_WINDOW,
         WebviewUrl::App("settings.html".into()),
     )
-    .title("Settings")
+    .title(crate::locale::tr(zh, "Settings", "设置"))
     .inner_size(SETTINGS_WIDTH, SETTINGS_HEIGHT)
     .resizable(false)
     .minimizable(false)
